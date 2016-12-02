@@ -88,21 +88,92 @@ sub incormanage {
     my $token = generate_token($opt);
 
     foreach my $vmname(@vmnames){
+	    my $image_value = generate_network($token,$vmname);
+=pod
 	    my $flavor_value = generate_flavor($token,$vmname);
 	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
-	    #my $image_value = generate_network($token,$vmname);
+	    my $image_value = generate_network($token,$vmname);
 
 	    my %vm_parameter = {};
 	    $vm_parameter{image_id} = $image_value;
 	    $vm_parameter{flavor_id} = $flavor_value;
 	    $vm_parameter{vm_name} = $vmname;
 	    my $vm_ret_val = create_vm($token,\%vm_parameter);
+=cut
 
     }
 
     push @values, ["success","$token",0];
     return( \@values );
 }
+
+sub generate_network
+{
+	my $token = shift;
+	my $vmname = shift;
+	my $token_id = $token->{access}->{token}->{id};
+	my $url;
+	my $service_info = $token->{access}->{serviceCatalog};
+	foreach my $tmp_value (@$service_info){
+		if ($tmp_value->{type} eq "network"){
+			$url = $tmp_value->{endpoints}[0]->{adminURL};
+			last;
+		}
+	}
+
+	#create network
+	my $network_return_value = ();
+	my $network_url = $url."v2.0/networks";
+
+	my $vlan_id = get_table_value("vlan","t_vlan",$vmname)->{vlan};
+	my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
+	my $post_data = "{\"network\":$create_network_parameter}";
+
+	my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
+    	my $network_post_data_hash = decode_json($network_post_value);
+	$network_return_value = $network_post_data_hash->{network}->{id};	
+
+	#create subnet
+	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
+	my $cidr = $vm_ip;	
+	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
+	my $start_ip =$vm_ip;
+	$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.20/;
+	my $end_ip =$vm_ip;
+	$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.40/;
+	my $gateway_ip = get_table_value("gateway","t_network",$vmname)->{gateway};
+	my $subnet_return_value = ();
+	my $subnet_url = $url."v2.0/subnets";
+	my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
+	\"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
+	\"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
+	my $post_data = "{\"subnet\":$create_subnet_parameter}";
+
+	my $subnet_url = $url."v2.0/subnets";
+	my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
+    	my $subnet_post_data_hash = decode_json($subnet_post_value);
+	$subnet_return_value = $subnet_post_data_hash->{server}->{name};	
+
+	return $network_return_value;
+}
+
+sub get_table_value
+{
+	my $condition_key = shift;
+	my $table_name = shift;
+	my $search_key = shift;
+	my $dict = get_db_user_passwd();
+	my ($host,$db,$username,$password) = split(':',$dict);
+	my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
+	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where lpar_name="$search_key" ;});
+	$pre->execute();
+	my $return_value = $pre->fetchrow_hashref();
+	$pre->finish();
+	$dbd->disconnect();
+	return $return_value;
+	
+} 
+
 
 sub create_vm
 {
