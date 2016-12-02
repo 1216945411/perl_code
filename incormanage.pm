@@ -16,6 +16,7 @@ use LWP::UserAgent;
 use LWP::Simple;
 use Data::Dumper;  
 use JSON;
+use Config::Tiny;
 #use File::Lockfile;
 
 ##########################################################################
@@ -51,7 +52,7 @@ sub parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose t=s u=s p=s i=s o=s v=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose t=s u=s p=s v=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -82,13 +83,14 @@ sub incormanage {
     my @values  = ();
     my $Rc = undef;
     my $return_value = ();
-
     my @vmnames = split(/,/,$opt->{v});#"aixvm111";
+
     my $token = generate_token($opt);
 
     foreach my $vmname(@vmnames){
-	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
 	    my $flavor_value = generate_flavor($token,$vmname);
+	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
+	    #my $image_value = generate_network($token,$vmname);
 
 	    my %vm_parameter = {};
 	    $vm_parameter{image_id} = $image_value;
@@ -97,7 +99,6 @@ sub incormanage {
 	    my $vm_ret_val = create_vm($token,\%vm_parameter);
 
     }
-
 
     push @values, ["success","$token",0];
     return( \@values );
@@ -147,7 +148,6 @@ sub create_vm
 	my $post_data = "{\"server\":$create_vm_parameter}";
 
     	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($url), "info");
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($post_data), "info");
 	my $vm_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
     	my $vm_post_data_hash = decode_json($vm_post_value);
     	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_data_hash), "info");
@@ -173,11 +173,27 @@ sub generate_flavor
 	my $flavor_return_value = ();
 
 	
-	$flavor_data{name} = "liutest";
-	$flavor_data{vcpus} = 1;
-	$flavor_data{ram} = 128;
+	$flavor_data{name} = $vmname;
+	$flavor_data{vcpus} = ();
+	$flavor_data{ram} = ();
+	$flavor_data{disk} = ();
+	
+
+
+	 my $dict = get_db_user_passwd();
+	 my ($host,$db,$username,$password) = split(':',$dict);
+	 my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
+	 my $pre = $dbd->prepare( qq{SELECT memory_total,cpu_logic  FROM t_vm where lpar_name="$vmname" ;});
+	 $pre->execute();
+	 my $info = $pre->fetchrow_hashref();
+	 $pre->finish();
+	 $dbd->disconnect();
+
+	$flavor_data{vcpus} = $info->{cpu_logic};
+	$flavor_data{ram} = $info->{memory_total};
 	$flavor_data{disk} = 1;
 	
+
 	$url .= "/flavors";
 	my $get_url = $url."/detail";
 	my $flavor_get_data = get_request($token_id,$get_url)->decoded_content;	
@@ -191,14 +207,40 @@ sub generate_flavor
 		}
 	}
 
-	#gian the infomation that related to flavor frome pcenter database based on vmname
-	#my $post_data =  '{"flavor":{"name":"12169","ram":"1024","vcpus":"1","disk":"20"}}' ;
-	my $post_data = '{"flavor":{"name":"liutest","ram":"128","vcpus":"1","disk":"1"}}'; 
+	
+	my $tem_vcpus = $flavor_data{vcpus};
+	my $tem_ram = $flavor_data{ram};
+	my $tem_disk = $flavor_data{disk};
+
+	my $flavor_data = "{\"name\":\"$vmname\",\"ram\":\"$tem_ram\",\"vcpus\":\"$tem_vcpus\",\"disk\":\"$tem_disk\"}";
+	my $post_data = "{\"flavor\":$flavor_data}"; 
 	my $flavor_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
 
     	my $flavor_post_data_hash = decode_json($flavor_post_value);
 	$flavor_return_value = $flavor_post_data_hash->{flavor}->{id};	
 	return $flavor_return_value;
+}
+
+sub get_db_user_passwd{
+    my $config_file = "/etc/pcenter/cfgloc.mysql";
+    my $res = open(my $fh,'<',$config_file);
+    if (!$res or !defined($res)){
+        pcenter::MsgUtils->log("############### open the $config_file  failed :$!\n", "debug");
+    }
+    my $host;
+    my $db;
+    my $username;
+    my $password;
+
+    #mysql:dbname=pcenterdb;host=192.168.137.78|pcenteradmin|wang1234
+    while(<$fh>){
+        $_ =~ /mysql:dbname=(\w+);host=(\w+).(\w+).(\w+).(\w+)\|(\w+)\|(\w+)/;
+        $db = $1;
+        $host = "$2\.$3\.$4\.$5";
+        $username = $6;
+        $password = $7;
+    }
+    return "$host:$db:$username:$password";
 }
 
 sub generate_image
@@ -220,32 +262,49 @@ sub generate_image
 	}
 	$url .= "/v2/images";
 	# gian the infomation that related to image frome pcenter database based on vmname
-	my $image_name = "aix7.1";
+
+	 my $dict = get_db_user_passwd();
+	 my ($host,$db,$username,$password) = split(':',$dict);
+	 my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
+	 my $pre = $dbd->prepare( qq{SELECT os FROM t_vm where lpar_name="$vmname" ;});
+	 $pre->execute();
+	 my $info = $pre->fetchrow_hashref();
+	 $pre->finish();
+	 $dbd->disconnect();
+
+	my $image_name = $info->{os};
+	#my $image_name = "aix7.1";
 	my $get_url = $url."?name=$image_name";
 	my $image_get_data = get_request($token_id,$get_url)->decoded_content;	
     	my $image_get_data_hash = decode_json($image_get_data);
 	
+
 	# can't create the images with overlapping names if use this code	
         if(($image_get_data_hash->{images}[0]->{name} eq $image_name) && ($image_get_data_hash->{images}[0]->{status} == "active")){
 		$returned_image_id = $image_get_data_hash->{images}[0]->{id};	
 	}else{
-		my $post_data = "{\"container_format\": \"bare\", \"disk_format\": \"raw\", \"name\": \"$image_name\"}" ;
+
+=pod
+		my $post_data = "{\"__image_source_type\": \"glance\",\"file_name\",\"**.vhd\",\"file_format\":\"vhd\",\"protected\":false,\"min_disk\":1,\"visibility\":\"public\",\"container_format\": \"bare\", \"disk_format\": \"vhd\", \"name\": \"$image_name\"}" ;
+=cut
+		my $post_data ='{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "AIX7.1.0.0"}' ;
 		my $image_value = post_request($token_id,$url,$post_data)->decoded_content;	
+    		pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($image_value), "info");
 		# upload image data
-		my $put_data = "@/root/$image_name";
+		my $put_data = "@/root/$image_name"."vhd";
     		my $image_value_hash = decode_json($image_value);
 		my $image_id = $image_value_hash->{id};	
                 $returned_image_id = $image_id;
-	#	my $put_url = $url."/$image_id/file";
-		my $put_url = $url."/root/cirros-0.3.4-x86_64-disk.img";
+		my $put_url = $url."/$image_id/file";
+		#my $put_url = $url."/root/cirros-0.3.4-x86_64-disk.img";
 
-		open(FD,">/root/$image_name") or die $!;
+		open(FD,">/root/$image_name.vhd") or die $!;
 		print FD "this is image file";
 		close(FD);
 
 		my $tmp_ret_val = put_request($token_id,$put_url,$put_data);	
 		my $pcenter_cmd = "rm -rf /root/$image_name";
-		my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
+		#my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
 	} 	
 	return $returned_image_id;
 }
@@ -253,24 +312,25 @@ sub generate_token
 {
 	my $parameter = shift;
 	my $ua = LWP::UserAgent->new;
-	my $ip = $parameter->{i};
-	my $port = $parameter->{o};
 	my $version = ();#$parameter->{v};
 	my $tenant = $parameter->{t};
 	my $username = $parameter->{u};
 	my $password = $parameter->{p};
+
+        #Create a config
+        my $Config = Config::Tiny->new;
+    
+        #Open the config
+        my $config_path = "/etc/pcenter/openstack.conf";
+        $Config = Config::Tiny->read($config_path);
+        $Config = Config::Tiny->read($config_path, 'utf8' ); # Neither ':' nor '<:' prefix!
+        $Config = Config::Tiny->read($config_path, 'encoding(iso-8859-1)');
+    
+        #Reading properties
+        my $rootproperty = $Config->{_}->{rootproperty};
+        my $website = $Config->{section}->{token}; 
 	
-	# get version
-	my $server_endpoint = "http://$ip:$port/";
-	my $req = HTTP::Request->new(GET => $server_endpoint);
-	$req->header('content-type' => 'application/json');
-	my $tmp_ua = LWP::UserAgent->new;
-	my $tmp_resp = $tmp_ua->request($req)->decoded_content;
-    	my $versiondata_hash = decode_json($tmp_resp);
-	$version = $versiondata_hash->{versions}->{values}[0]->{id}; 	
-	$version = "v2.0";
-	
-	$server_endpoint = "http://$ip:$port/$version/tokens";
+	my $server_endpoint = "$website";
 
 	# set custom HTTP request header fields
 	my $req = HTTP::Request->new(POST => $server_endpoint);
