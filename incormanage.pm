@@ -88,11 +88,10 @@ sub incormanage {
     my $token = generate_token($opt);
 
     foreach my $vmname(@vmnames){
-	    my $image_value = generate_network($token,$vmname);
+	    my $network_value = generate_network($token,$vmname);
 =pod
 	    my $flavor_value = generate_flavor($token,$vmname);
-	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
-	    my $image_value = generate_network($token,$vmname);
+	    my $image_value = "1c153881-9e86-4b50-929d-dbf01878333b";#generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
 
 	    my %vm_parameter = {};
 	    $vm_parameter{image_id} = $image_value;
@@ -100,7 +99,6 @@ sub incormanage {
 	    $vm_parameter{vm_name} = $vmname;
 	    my $vm_ret_val = create_vm($token,\%vm_parameter);
 =cut
-
     }
 
     push @values, ["success","$token",0];
@@ -126,13 +124,29 @@ sub generate_network
 	my $network_url = $url."v2.0/networks";
 
 	my $vlan_id = get_table_value("vlan","t_vlan",$vmname)->{vlan};
-	my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
-	my $post_data = "{\"network\":$create_network_parameter}";
 
-	my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
-    	my $network_post_data_hash = decode_json($network_post_value);
-	$network_return_value = $network_post_data_hash->{network}->{id};	
+	my $network_get_data = get_request($token_id,$network_url)->decoded_content;	
+    	my $network_get_data_hash = decode_json($network_get_data);
 
+	my $create_net_flag = ();
+	my $tmp_networks = $network_get_data_hash->{networks};
+	foreach my $tmp_network_value (@$tmp_networks){
+		if ($tmp_network_value->{'provider:segmentation_id'} eq $vlan_id){
+			$network_return_value = $tmp_network_value->{'id'};	
+			$create_net_flag = 1;
+			last;
+		}
+	}
+
+	unless($create_net_flag){
+		my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
+		my $post_data = "{\"network\":$create_network_parameter}";
+		my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
+		my $network_post_data_hash = decode_json($network_post_value);
+		$network_return_value = $network_post_data_hash->{network}->{id};	
+	}
+
+=pod
 	#create subnet
 	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
 	my $cidr = $vm_ip;	
@@ -149,10 +163,24 @@ sub generate_network
 	\"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
 	my $post_data = "{\"subnet\":$create_subnet_parameter}";
 
-	my $subnet_url = $url."v2.0/subnets";
 	my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
     	my $subnet_post_data_hash = decode_json($subnet_post_value);
 	$subnet_return_value = $subnet_post_data_hash->{server}->{name};	
+
+	#create port
+	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
+	my $ports_return_value = ();
+	my $ports_url = $url."v2.0/ports";
+	my $create_ports_parameter = "{\"name\": \"eeeeeeeee\",\"admin_state_up\": true,
+	\"network_id\":\"ff9c0133-4c40-4a24-b366-158ed81deae4\",\"binding:vnic_type\":\"normal\",
+	\"fixed_ips\":[{\"subnet_id\":\"b7c01251-5605-46e3-a329-046c09b5fa64\",\"ip_address\":\"$vm_ip\"}]}";
+	my $post_data = "{\"port\":$create_ports_parameter}";
+    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($post_data), "info");
+
+	my $ports_post_value = post_request($token_id,$ports_url,$post_data)->decoded_content;	
+    	my $ports_post_data_hash = decode_json($ports_post_value);
+	$ports_return_value = $ports_post_data_hash->{server}->{name};	
+=cut
 
 	return $network_return_value;
 }
