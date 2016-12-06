@@ -146,41 +146,102 @@ sub generate_network
 		$network_return_value = $network_post_data_hash->{network}->{id};	
 	}
 
-=pod
+	
+
 	#create subnet
 	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
 	my $cidr = $vm_ip;	
 	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
-	my $start_ip =$vm_ip;
-	$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.20/;
-	my $end_ip =$vm_ip;
-	$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.40/;
-	my $gateway_ip = get_table_value("gateway","t_network",$vmname)->{gateway};
 	my $subnet_return_value = ();
 	my $subnet_url = $url."v2.0/subnets";
-	my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
-	\"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
-	\"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
-	my $post_data = "{\"subnet\":$create_subnet_parameter}";
+	my $subnet_get_data = get_request($token_id,$subnet_url)->decoded_content;	
+    	my $subnet_get_data_hash = decode_json($subnet_get_data);
+	my $tmp_subnets = $subnet_get_data_hash->{subnets};
+	my $create_subnet_flag = 0;
+	foreach my $tmp_subnet_value (@$tmp_subnets){
+		if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
+			my $allocation_pools = $tmp_subnet_value->{'allocation_pools'};
+			foreach my $temp_pools (@$allocation_pools){
+				#if(($vm_ip gt $temp_pools->{'start'} ) and ($vm_ip lt $temp_pools->{'end'})){
+				if(($vm_ip lt \$temp_pools->{'end'} ) and ($vm_ip gt $temp_pools->{'start'} )){
+					$create_subnet_flag = 5;
+					$subnet_return_value = $tmp_subnet_value->{'id'};
+					last;
+				}else{
+					$create_subnet_flag = 2;
+				}
+				
+			}
+			if(1 == $create_subnet_flag){
+				last;
+			}
+		}
+	}
 
-	my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
-    	my $subnet_post_data_hash = decode_json($subnet_post_value);
-	$subnet_return_value = $subnet_post_data_hash->{server}->{name};	
+	if(5 > $subnet_return_value ){
+		my $start_num = '2';
+		my $end_num = '254';
+		if(2 == $create_subnet_flag){
+			$start_num = $vm_ip; 
+			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)./$4/;
+			$end_num = $start_num; 
+		}
+		my $start_ip =$vm_ip;
+		$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$start_num/;
+		my $end_ip =$vm_ip;
+		$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$end_num/;
 
-	#create port
-	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
-	my $ports_return_value = ();
-	my $ports_url = $url."v2.0/ports";
-	my $create_ports_parameter = "{\"name\": \"eeeeeeeee\",\"admin_state_up\": true,
-	\"network_id\":\"ff9c0133-4c40-4a24-b366-158ed81deae4\",\"binding:vnic_type\":\"normal\",
-	\"fixed_ips\":[{\"subnet_id\":\"b7c01251-5605-46e3-a329-046c09b5fa64\",\"ip_address\":\"$vm_ip\"}]}";
-	my $post_data = "{\"port\":$create_ports_parameter}";
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($post_data), "info");
+		my $gateway_ip = get_table_value("gateway","t_network",$vmname)->{gateway};
+		my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
+		   \"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
+		   \"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
+		my $post_data = "{\"subnet\":$create_subnet_parameter}";
 
-	my $ports_post_value = post_request($token_id,$ports_url,$post_data)->decoded_content;	
-    	my $ports_post_data_hash = decode_json($ports_post_value);
-	$ports_return_value = $ports_post_data_hash->{server}->{name};	
-=cut
+		my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
+		my $subnet_post_data_hash = decode_json($subnet_post_value);
+		$subnet_return_value = $subnet_post_data_hash->{subnet}->{id};	
+
+	}
+
+	my $port_return_value = ();
+	my $port_url = $url."v2.0/ports";
+
+	my $port_get_data = get_request($token_id,$port_url)->decoded_content;	
+    	my $port_get_data_hash = decode_json($port_get_data);
+
+	my $port_ip = get_table_value("ip","t_network",$vmname)->{ip};
+	my $create_port_flag = ();
+	my $tmp_ports = $port_get_data_hash->{ports};
+	foreach my $tmp_port_value (@$tmp_ports){
+	#	if (($tmp_port_value->{'network_id'} eq $network_return_value) && ($tmp_port_value->{'network_id'} eq "DOWN") ){
+		if (($tmp_port_value->{'network_id'} eq $network_return_value) ){
+			my $tmp_ips_hash = $tmp_port_value->{fixed_ips};	
+			foreach my $temp_fixed_ips (@$tmp_ips_hash){
+				if($temp_fixed_ips->{'ip_address'} eq $port_ip ){
+					$port_return_value = $tmp_port_value->{'id'};	
+					$create_port_flag = 1;
+					last;
+				}
+			}
+			if(1 == $create_port_flag){
+				last;	
+			}
+		}
+	}
+	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($create_port_flag), "info");
+
+	unless($create_port_flag){
+		my $create_ports_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,
+		   \"network_id\":\"$network_return_value\",\"binding:vnic_type\":\"normal\",
+		   \"fixed_ips\":[{\"subnet_id\":\"$subnet_return_value\",\"ip_address\":\"$port_ip\"}]}";
+		my $post_data = "{\"port\":$create_ports_parameter}";
+		pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($post_data), "info");
+
+		my $ports_post_value = post_request($token_id,$port_url,$post_data)->decoded_content;	
+		my $ports_post_data_hash = decode_json($ports_post_value);
+		$port_return_value = $ports_post_data_hash->{ports}->{id};		
+
+	}
 
 	return $network_return_value;
 }
