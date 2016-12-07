@@ -384,8 +384,6 @@ sub generate_flavor
 	$flavor_data{vcpus} = ();
 	$flavor_data{ram} = ();
 	$flavor_data{disk} = ();
-	
-
 
 	 my $dict = get_db_user_passwd();
 	 my ($host,$db,$username,$password) = split(':',$dict);
@@ -480,7 +478,6 @@ sub generate_image
 	 $dbd->disconnect();
 
 	my $image_name = $info->{os};
-	#my $image_name = "aix7.1";
 	my $get_url = $url."?name=$image_name";
 	my $image_get_data = get_request($token_id,$get_url)->decoded_content;	
     	my $image_get_data_hash = decode_json($image_get_data);
@@ -490,20 +487,17 @@ sub generate_image
         if(($image_get_data_hash->{images}[0]->{name} eq $image_name) && ($image_get_data_hash->{images}[0]->{status} == "active")){
 		$returned_image_id = $image_get_data_hash->{images}[0]->{id};	
 	}else{
+		my $image_name = get_table_value("os","t_vm","lpar_name",$vmname)->{os};
+		my $post_data ='{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "$image_name"}' ;
+		$post_data =~ s/^(.*)"(\$image_name)/$1"$image_name/;
 
-=pod
-		my $post_data = "{\"__image_source_type\": \"glance\",\"file_name\",\"**.vhd\",\"file_format\":\"vhd\",\"protected\":false,\"min_disk\":1,\"visibility\":\"public\",\"container_format\": \"bare\", \"disk_format\": \"vhd\", \"name\": \"$image_name\"}" ;
-=cut
-		my $post_data ='{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "AIX7.1.0.0"}' ;
 		my $image_value = post_request($token_id,$url,$post_data)->decoded_content;	
-    		pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($image_value), "info");
 		# upload image data
 		my $put_data = "@/root/$image_name"."vhd";
     		my $image_value_hash = decode_json($image_value);
 		my $image_id = $image_value_hash->{id};	
                 $returned_image_id = $image_id;
 		my $put_url = $url."/$image_id/file";
-		#my $put_url = $url."/root/cirros-0.3.4-x86_64-disk.img";
 
 		open(FD,">/root/$image_name.vhd") or die $!;
 		print FD "this is image file";
@@ -511,7 +505,7 @@ sub generate_image
 
 		my $tmp_ret_val = put_request($token_id,$put_url,$put_data);	
 		my $pcenter_cmd = "rm -rf /root/$image_name";
-		#my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
+		my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
 	} 	
 	return $returned_image_id;
 }
@@ -546,8 +540,7 @@ sub generate_token
 
 	# add POST data to HTTP request body
 
-	my $credentials = "{\"username\": \"$username\", \"password\": \"$password\"}";
-	my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": $credentials}";
+	my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
 	my $post_data ="{\"auth\": $auth}";
 
 	$req->content($post_data);
@@ -557,7 +550,6 @@ sub generate_token
 	if ($resp->is_success) {
 		 my $token_json = $resp->decoded_content;
     		 my $token_hash = decode_json($token_json);
-		 #$return_value = $token_hash->{access}->{token}->{id};
 		 $return_value = $token_hash;
 	}
 	else {
