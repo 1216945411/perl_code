@@ -88,181 +88,21 @@ sub incormanage {
     my $token = generate_token($opt);
 
     foreach my $vmname(@vmnames){
-	    my $network_value = generate_network($token,$vmname);
-=pod
+	    my @network_value = generate_network($token,$vmname);
 	    my $flavor_value = generate_flavor($token,$vmname);
-	    my $image_value = "1c153881-9e86-4b50-929d-dbf01878333b";#generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
+	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
 
-	    my %vm_parameter = {};
+	    my %vm_parameter;
 	    $vm_parameter{image_id} = $image_value;
 	    $vm_parameter{flavor_id} = $flavor_value;
 	    $vm_parameter{vm_name} = $vmname;
+	    $vm_parameter{vm_ports} = \@network_value;
 	    my $vm_ret_val = create_vm($token,\%vm_parameter);
-=cut
     }
 
     push @values, ["success","$token",0];
     return( \@values );
 }
-
-sub generate_network
-{
-	my $token = shift;
-	my $vmname = shift;
-	my $token_id = $token->{access}->{token}->{id};
-	my $url;
-	my $service_info = $token->{access}->{serviceCatalog};
-	foreach my $tmp_value (@$service_info){
-		if ($tmp_value->{type} eq "network"){
-			$url = $tmp_value->{endpoints}[0]->{adminURL};
-			last;
-		}
-	}
-
-	#create network
-	my $network_return_value = ();
-	my $network_url = $url."v2.0/networks";
-
-	my $vlan_id = get_table_value("vlan","t_vlan",$vmname)->{vlan};
-
-	my $network_get_data = get_request($token_id,$network_url)->decoded_content;	
-    	my $network_get_data_hash = decode_json($network_get_data);
-
-	my $create_net_flag = ();
-	my $tmp_networks = $network_get_data_hash->{networks};
-	foreach my $tmp_network_value (@$tmp_networks){
-		if ($tmp_network_value->{'provider:segmentation_id'} eq $vlan_id){
-			$network_return_value = $tmp_network_value->{'id'};	
-			$create_net_flag = 1;
-			last;
-		}
-	}
-
-	unless($create_net_flag){
-		my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
-		my $post_data = "{\"network\":$create_network_parameter}";
-		my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
-		my $network_post_data_hash = decode_json($network_post_value);
-		$network_return_value = $network_post_data_hash->{network}->{id};	
-	}
-
-	
-
-	#create subnet
-	my $vm_ip = get_table_value("ip","t_network",$vmname)->{ip};
-	my $cidr = $vm_ip;	
-	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
-	my $subnet_return_value = ();
-	my $subnet_url = $url."v2.0/subnets";
-	my $subnet_get_data = get_request($token_id,$subnet_url)->decoded_content;	
-    	my $subnet_get_data_hash = decode_json($subnet_get_data);
-	my $tmp_subnets = $subnet_get_data_hash->{subnets};
-	my $create_subnet_flag = 0;
-	foreach my $tmp_subnet_value (@$tmp_subnets){
-		if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
-			my $allocation_pools = $tmp_subnet_value->{'allocation_pools'};
-			foreach my $temp_pools (@$allocation_pools){
-				#if(($vm_ip gt $temp_pools->{'start'} ) and ($vm_ip lt $temp_pools->{'end'})){
-				if(($vm_ip lt \$temp_pools->{'end'} ) and ($vm_ip gt $temp_pools->{'start'} )){
-					$create_subnet_flag = 5;
-					$subnet_return_value = $tmp_subnet_value->{'id'};
-					last;
-				}else{
-					$create_subnet_flag = 2;
-				}
-				
-			}
-			if(1 == $create_subnet_flag){
-				last;
-			}
-		}
-	}
-
-	if(5 > $subnet_return_value ){
-		my $start_num = '2';
-		my $end_num = '254';
-		if(2 == $create_subnet_flag){
-			$start_num = $vm_ip; 
-			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)./$4/;
-			$end_num = $start_num; 
-		}
-		my $start_ip =$vm_ip;
-		$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$start_num/;
-		my $end_ip =$vm_ip;
-		$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$end_num/;
-
-		my $gateway_ip = get_table_value("gateway","t_network",$vmname)->{gateway};
-		my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
-		   \"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
-		   \"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
-		my $post_data = "{\"subnet\":$create_subnet_parameter}";
-
-		my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
-		my $subnet_post_data_hash = decode_json($subnet_post_value);
-		$subnet_return_value = $subnet_post_data_hash->{subnet}->{id};	
-
-	}
-
-	my $port_return_value = ();
-	my $port_url = $url."v2.0/ports";
-
-	my $port_get_data = get_request($token_id,$port_url)->decoded_content;	
-    	my $port_get_data_hash = decode_json($port_get_data);
-
-	my $port_ip = get_table_value("ip","t_network",$vmname)->{ip};
-	my $create_port_flag = ();
-	my $tmp_ports = $port_get_data_hash->{ports};
-	foreach my $tmp_port_value (@$tmp_ports){
-	#	if (($tmp_port_value->{'network_id'} eq $network_return_value) && ($tmp_port_value->{'network_id'} eq "DOWN") ){
-		if (($tmp_port_value->{'network_id'} eq $network_return_value) ){
-			my $tmp_ips_hash = $tmp_port_value->{fixed_ips};	
-			foreach my $temp_fixed_ips (@$tmp_ips_hash){
-				if($temp_fixed_ips->{'ip_address'} eq $port_ip ){
-					$port_return_value = $tmp_port_value->{'id'};	
-					$create_port_flag = 1;
-					last;
-				}
-			}
-			if(1 == $create_port_flag){
-				last;	
-			}
-		}
-	}
-	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($create_port_flag), "info");
-
-	unless($create_port_flag){
-		my $create_ports_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,
-		   \"network_id\":\"$network_return_value\",\"binding:vnic_type\":\"normal\",
-		   \"fixed_ips\":[{\"subnet_id\":\"$subnet_return_value\",\"ip_address\":\"$port_ip\"}]}";
-		my $post_data = "{\"port\":$create_ports_parameter}";
-		pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($post_data), "info");
-
-		my $ports_post_value = post_request($token_id,$port_url,$post_data)->decoded_content;	
-		my $ports_post_data_hash = decode_json($ports_post_value);
-		$port_return_value = $ports_post_data_hash->{ports}->{id};		
-
-	}
-
-	return $network_return_value;
-}
-
-sub get_table_value
-{
-	my $condition_key = shift;
-	my $table_name = shift;
-	my $search_key = shift;
-	my $dict = get_db_user_passwd();
-	my ($host,$db,$username,$password) = split(':',$dict);
-	my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
-	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where lpar_name="$search_key" ;});
-	$pre->execute();
-	my $return_value = $pre->fetchrow_hashref();
-	$pre->finish();
-	$dbd->disconnect();
-	return $return_value;
-	
-} 
-
 
 sub create_vm
 {
@@ -284,36 +124,243 @@ sub create_vm
 	
 	$url .= "/servers";
 	
-=pod
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_parameter), "info");
-	# can't create the images with overlapping names if use this code	
-	# '{"server": {"name": "api_vm","imageRef": "1c153881-9e86-4b50-929d-dbf01878333b","flavorRef": "1"}}'
-
-	my $post_data = 
-	my $vm_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
-    	my $vm_post_data_hash = decode_json($vm_post_value);
-	$vm_return_value = $vm_post_data_hash->{server}->{name};	
-=cut
-
-=pod	
-	my $credentials = "{\"username\": \"$username\", \"password\": \"$password\"}";
-	my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": $credentials}";
-	my $post_data ="{\"auth\": $auth}";
-	return $vm_return_value;
-=cut
 	my $vm_name = $vm_parameter->{vm_name};
 	my $image_id = $vm_parameter->{image_id};
 	my $flavor_id = $vm_parameter->{flavor_id};
-	my $create_vm_parameter = "{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\"}";
-	my $post_data = "{\"server\":$create_vm_parameter}";
+	my $vm_ports ;
+	foreach my $tmp_port_value (@{$vm_parameter->{vm_ports}}){
+		$vm_ports .= "{\"port\":\"$tmp_port_value\"},";
+	}	
+	$vm_ports =~ s/^(.*),$/$1/;
 
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($url), "info");
+	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
 	my $vm_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
     	my $vm_post_data_hash = decode_json($vm_post_value);
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_data_hash), "info");
-	$vm_return_value = $vm_post_data_hash->{server}->{name};	
+	$vm_return_value = $vm_post_data_hash->{server}->{id};	
 	return $vm_return_value;
 }
+
+
+
+sub get_subnet_id
+{
+
+	my $token_id = shift;
+	my $url	= shift;
+	my $vm_ip = shift;
+	my $gateway_ip = shift;
+	my $vmname = shift;
+	my $network_return_value = shift;
+
+	my $cidr = $vm_ip;	
+	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
+	my $subnet_return_value = ();
+
+	my $subnet_url = $url."v2.0/subnets";
+	my $subnet_get_data = get_request($token_id,$subnet_url)->decoded_content;	
+    	my $subnet_get_data_hash = decode_json($subnet_get_data);
+	my $create_subnet_flag = 0;
+	foreach my $tmp_subnet_value (@{$subnet_get_data_hash->{subnets}}){
+		if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
+			my $allocation_pools = $tmp_subnet_value->{'allocation_pools'};
+			foreach my $temp_pools (@$allocation_pools){
+				#if(($vm_ip gt $temp_pools->{'start'} ) and ($vm_ip lt $temp_pools->{'end'})){
+				if(($vm_ip lt \$temp_pools->{'end'} ) and ($vm_ip gt $temp_pools->{'start'} )){
+					$create_subnet_flag = 5;
+					$subnet_return_value = $tmp_subnet_value->{'id'};
+					last;
+				}else{
+					$create_subnet_flag = 2;
+				}
+				
+			}
+			if(1 == $create_subnet_flag){
+				last;
+			}
+		}
+	}
+
+	if(5 >  $create_subnet_flag){
+		my $start_num = '2';
+		my $end_num = '254';
+		if(2 == $create_subnet_flag){
+			$start_num = $vm_ip; 
+			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)./$4/;
+			$end_num = $start_num; 
+		}
+		my $start_ip =$vm_ip;
+		$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$start_num/;
+		my $end_ip =$vm_ip;
+		$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$end_num/;
+
+		my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
+		   \"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
+		   \"gateway_ip\":\"$gateway_ip\",\"allocation_pools\":[{\"start\":\"$start_ip\",\"end\":\"$end_ip\"}]}";
+		my $post_data = "{\"subnet\":$create_subnet_parameter}";
+
+		my $subnet_post_value = post_request($token_id,$subnet_url,$post_data)->decoded_content;	
+		my $subnet_post_data_hash = decode_json($subnet_post_value);
+		$subnet_return_value = $subnet_post_data_hash->{subnet}->{id};	
+
+	}
+	
+	return $subnet_return_value;
+
+}
+
+sub get_net_id
+{
+	my $token_id = shift;
+	my $url	= shift;
+	my $vlan_id = shift;
+	my $vmname = shift;
+	my $network_url = $url."v2.0/networks";
+        my $network_return_value ;
+	
+	my $network_get_data = get_request($token_id,$network_url)->decoded_content;	
+    	my $network_get_data_hash = decode_json($network_get_data);
+
+	my $create_net_flag = ();
+	foreach my $tmp_network_value (@{$network_get_data_hash->{networks}}){
+		if ($tmp_network_value->{'provider:segmentation_id'} eq $vlan_id){
+			$network_return_value = $tmp_network_value->{'id'};	
+			$create_net_flag = 1;
+			last;
+		}
+	}
+
+	unless($create_net_flag){
+		my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
+		my $post_data = "{\"network\":$create_network_parameter}";
+		my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
+		my $network_post_data_hash = decode_json($network_post_value);
+		$network_return_value = $network_post_data_hash->{network}->{id};	
+	}
+
+	return $network_return_value;
+}
+
+sub get_port_id
+{
+	my $token_id = shift;
+	my $url	= shift;
+	my $port_ip = shift;
+	my $network_return_value = shift;
+	my $subnet_return_value = shift;
+	my $vmname = shift;
+
+
+	my $port_return_value = ();
+	my $port_url = $url."v2.0/ports";
+
+	my $port_get_data = get_request($token_id,$port_url)->decoded_content;	
+    	my $port_get_data_hash = decode_json($port_get_data);
+
+	my $create_port_flag = ();
+	my $tmp_ports = $port_get_data_hash->{ports};
+	foreach my $tmp_port_value (@{$port_get_data_hash->{ports}}){
+	#	if (($tmp_port_value->{'network_id'} eq $network_return_value) && ($tmp_port_value->{'network_id'} eq "DOWN") ){
+		if (($tmp_port_value->{'network_id'} eq $network_return_value) ){
+			my $tmp_ips_hash = $tmp_port_value->{fixed_ips};	
+			foreach my $temp_fixed_ips (@$tmp_ips_hash){
+				if($temp_fixed_ips->{'ip_address'} eq $port_ip ){
+					$port_return_value = $tmp_port_value->{'id'};	
+					$create_port_flag = 1;
+					last;
+				}
+			}
+			if(1 == $create_port_flag){
+				last;	
+			}
+		}
+	}
+	unless($create_port_flag){
+		my $create_ports_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,
+		   \"network_id\":\"$network_return_value\",\"binding:vnic_type\":\"normal\",
+		   \"fixed_ips\":[{\"subnet_id\":\"$subnet_return_value\",\"ip_address\":\"$port_ip\"}]}";
+		my $post_data = "{\"port\":$create_ports_parameter}";
+
+		my $ports_post_value = post_request($token_id,$port_url,$post_data)->decoded_content;	
+		my $ports_post_data_hash = decode_json($ports_post_value);
+		$port_return_value = $ports_post_data_hash->{port}->{id};		
+
+	}
+	return $port_return_value ;
+}
+
+sub generate_network
+{
+	my $token = shift;
+	my $vmname = shift;
+	my @return_ports = ();
+	my $token_id = $token->{access}->{token}->{id};
+	my $url;
+	my $service_info = $token->{access}->{serviceCatalog};
+	foreach my $tmp_value (@$service_info){
+		if ($tmp_value->{type} eq "network"){
+			$url = $tmp_value->{endpoints}[0]->{adminURL};
+			last;
+		}
+	}
+
+	#create network
+	my $network_return_value = ();
+	my $network_url = $url."v2.0/networks";
+	my @return_values;
+	my $eths = get_table_values("eth","t_vlan",$vmname);
+	foreach my $tmp_eth (@$eths){
+		my $eth_vlan = get_table_value("vlan","t_vlan","eth",$tmp_eth->{eth});
+		my $eth_ip = get_table_value("ip","t_network","eth",$tmp_eth->{eth});
+		my $eth_gateway = get_table_value("gateway","t_network","eth",$tmp_eth->{eth});
+
+		my $net_id = get_net_id($token_id,$url,$eth_vlan->{'vlan'},$vmname);  
+		my $subnet_id = get_subnet_id($token_id,$url,$eth_ip->{'ip'},$eth_gateway->{'gateway'},$vmname,$net_id);  
+		my $port_id = get_port_id($token_id,$url,$eth_ip->{'ip'},$net_id,$subnet_id,$vmname);
+		push @return_ports,$port_id;	
+	}
+	return  @return_ports;	
+}
+
+sub get_table_values
+{
+	my $condition_key = shift;
+	my $table_name = shift;
+	my $search_key = shift;
+	my $dict = get_db_user_passwd();
+	my ($host,$db,$username,$password) = split(':',$dict);
+	my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
+	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where lpar_name="$search_key" ;});
+	$pre->execute();
+	my @return_value;
+	while (my $tmp_value = $pre->fetchrow_hashref()){
+		push @return_value,$tmp_value;
+	}
+	$pre->finish();
+	$dbd->disconnect();
+	return \@return_value;
+	
+}
+
+sub get_table_value
+{
+	my $condition_key = shift;
+	my $table_name = shift;
+	my $search_key = shift;
+	my $search_value = shift;
+	my $dict = get_db_user_passwd();
+	my ($host,$db,$username,$password) = split(':',$dict);
+	my  $dbd = DBI->connect("DBI:mysql:$db:$host", "$username", "$password");
+	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where $search_key="$search_value" ;});
+	$pre->execute();
+	my $return_value = $pre->fetchrow_hashref();
+	$pre->finish();
+	$dbd->disconnect();
+	return $return_value;
+	
+} 
+
+
+
 
 
 sub generate_flavor
