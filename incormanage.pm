@@ -26,6 +26,7 @@ use Config::Tiny;
 my %method = (
     incormanage => \&incormanage_parse_args,
     admintoken => \&admintoken_parse_args,
+    incortoken => \&incortoken_parse_args,
     incorusers => \&incorusers_parse_args,
     unincormanage => \&unincormanage_parse_args,
 );
@@ -97,6 +98,55 @@ sub incorusers_parse_args {
 
 }
 
+##########################################################################
+# Parse the command line for options and operands
+##########################################################################
+sub incortoken_parse_args {
+    #pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+    my $request = shift;
+    my %opt     = ();
+    my $cmd     = $request->{command};
+    my $args    = $request->{arg};
+
+    #############################################
+    # Responds with usage statement
+    #############################################
+    local *usage = sub { 
+        my $usage_string = pcenter::Usage->getUsage($cmd);
+        return( [ $_[0], $usage_string] );
+    };
+    #############################################
+    # Process command-line arguments
+    #############################################
+    if ( !defined( $args )) {
+        $request->{method} = $cmd;
+        return( \%opt );
+    }
+    #############################################
+    # Checks case in GetOptions, allows opts
+    # to be grouped (e.g. -vx), and terminates
+    # at the first unrecognized option.
+    #############################################
+    @ARGV = @$args;
+    $Getopt::Long::ignorecase = 0;
+    Getopt::Long::Configure( "bundling" );
+
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s) )) {
+        return( usage("There is command not support") );
+    }
+    ####################################
+    # Check for "-" with no option
+    ####################################
+    if ( grep(/^-$/, @ARGV )) {
+        return(usage( "Missing option: -" ));
+    }
+    ####################################
+    # No operands - add command name 
+    ####################################
+    $request->{method} = $cmd; 
+    return( \%opt );
+
+}
 
 
 ##########################################################################
@@ -132,7 +182,7 @@ sub admintoken_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose t=s u=s p=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -235,7 +285,7 @@ sub incormanage_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose t=s u=s p=s v=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose a=s t=s u=s p=s v=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -265,9 +315,7 @@ sub incorusers
     my $return_value = ();
     my @vmnames = split(/,/,$opt->{v});#"aixvm111";
 
-    #my $url = "http://192.168.137.22:5000/v3/users";
-    my $url = gain_service_url("user_list");
-    pcenter::MsgUtils->log("#######################[#".Dumper($url), "info");
+    my $url = gain_conf_value("url","user_list");
     my $token = $opt->{t};
     my $users = get_request($token,$url)->decoded_content;
     my $users_hash = decode_json($users);
@@ -287,10 +335,45 @@ sub incorusers
     return( \@values );
 }
 
-
-sub admintoken
+sub general_tenant_id
 {
-    pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+	my $token = shift;
+	my $user_id = shift;
+	my $tenant_id;
+	my $url = gain_conf_value("url","projects");
+	$url =~ s/^(.*)(userid)(.*)$/$1$user_id$3/;	
+
+	my $tenants = get_request($token,$url)->decoded_content;
+	my $tenants_hash = decode_json($tenants);
+	my $admin_tenant = gain_conf_value("tenant","administrator");
+	$tenant_id = @{$tenants_hash->{projects}}[0]->{id};
+
+	return $tenant_id;
+}
+
+sub get_tenant_id
+{
+	my $token = shift;
+	my $user_id = shift;
+	my $tenant_id;
+	my $url = gain_conf_value("url","projects");
+	$url =~ s/^(.*)(userid)(.*)$/$1$user_id$3/;	
+
+	my $tenants = get_request($token,$url)->decoded_content;
+	my $tenants_hash = decode_json($tenants);
+	my $admin_tenant = gain_conf_value("tenant","administrator");
+	foreach my $tenants (@{$tenants_hash->{projects}}){
+		if($tenants->{name} eq $admin_tenant){
+			$tenant_id = $tenants->{id};
+			last;
+		}
+	}
+
+	return $tenant_id;
+}
+
+sub incortoken
+{
     my $request = shift;
     my $hash    = shift;
     my $exp     = shift;
@@ -299,12 +382,18 @@ sub admintoken
     my @values  = ();
     my $Rc = undef;
     my $return_value = ();
-    my @vmnames = split(/,/,$opt->{v});#"aixvm111";
 
-    my $token = generate_token($opt)->{access}->{token}->{id};
+    my $username = $opt->{u}; 
+    my $password = $opt->{p}; 
+
+    my $auth = "{\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
+    my $token_info = generate_token($auth);
+    my $token = $token_info->{access}->{token}->{id};
+    my $user_id = $token_info->{access}->{user}->{id}; 
+    my $tenant_id = general_tenant_id($token,$user_id);
 	
     if(defined ($token)){
-    	push @values, ["success","$token",0];
+    	push @values, ["success","$token,$tenant_id",0];
     }else{
     	push @values, ["fail","",0];
     }
@@ -312,8 +401,56 @@ sub admintoken
     return( \@values );
 }
 
-sub gain_service_url
+sub admintoken
+{
+    my $request = shift;
+    my $hash    = shift;
+    my $exp     = shift;
+    my $hwtype  = @$exp[2];
+    my $opt     = $request->{opt};
+    my @values  = ();
+    my $Rc = undef;
+    my $return_value = ();
+    my $is_admin = ();
+
+    my $username = $opt->{u}; 
+    my $password = $opt->{p}; 
+    #Create a config
+    my $Config = Config::Tiny->new;
+
+    #Open the config
+    my $config_path = "/etc/pcenter/openstack.conf";
+    $Config = Config::Tiny->read($config_path);
+    $Config = Config::Tiny->read($config_path, 'utf8' ); # Neither ':' nor '<:' prefix!
+    $Config = Config::Tiny->read($config_path, 'encoding(iso-8859-1)');
+
+    #Reading properties
+    my $tenant = $Config->{tenant}->{administrator};
+
+    my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
+    my $token_info = generate_token($auth);
+    my $token = $token_info->{access}->{token}->{id};
+    my $user_id = $token_info->{access}->{user}->{id}; 
+    my $tenant_id = get_tenant_id($token,$user_id);
+    foreach my $role (@{$token_info->{access}->{user}->{roles}}){
+	    if($role->{name} eq "admin"){
+		    $is_admin = 1;
+		    last;
+	    }
+    }
+	
+    if(defined ($is_admin)){
+    	push @values, ["success","$token,$tenant_id",0];
+    }else{
+    	push @values, ["fail","",1];
+    }
+
+    return( \@values );
+}
+
+sub gain_conf_value
 {	
+	my $section =shift;
 	my $service_name = shift;
         #Create a config
         my $Config = Config::Tiny->new;
@@ -326,7 +463,7 @@ sub gain_service_url
     
         #Reading properties
         my $rootproperty = $Config->{_}->{rootproperty};
-        my $website = $Config->{section}->{$service_name}; 
+        my $website = $Config->{$section}->{$service_name}; 
 	
 	my $server_endpoint = "$website";
 	return $server_endpoint ;
@@ -345,24 +482,28 @@ sub incormanage {
     my @values  = ();
     my $Rc = undef;
     my $return_value = ();
-    my @vmnames = split(/,/,$opt->{v});#"aixvm111";
+    my @vmnames = split(/,/,$opt->{v});
 
+    my $admintoken = $opt->{a};
+    my $admintenant = $opt->{t};
+    my $usertoken = $opt->{u};
+    my $usertenant = $opt->{p};
     my $token = generate_token($opt);
-
     foreach my $vmname(@vmnames){
-	    my @network_value = generate_network($token,$vmname);
-	    my $flavor_value = generate_flavor($token,$vmname);
-	    my $image_value = generate_image($token,$vmname);#"1c153881-9e86-4b50-929d-dbf01878333b";
+	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
+	    my $image_value = generate_image($admintoken,$vmname);
+	    my @network_value = generate_network($admintoken,$vmname);
 
 	    my %vm_parameter;
 	    $vm_parameter{image_id} = $image_value;
 	    $vm_parameter{flavor_id} = $flavor_value;
 	    $vm_parameter{vm_name} = $vmname;
 	    $vm_parameter{vm_ports} = \@network_value;
-	    my $vm_ret_val = create_vm($token,\%vm_parameter);
+	    my $vm_ret_val = create_vm($usertoken,\%vm_parameter,$usertenant);
+    	    pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>".Dumper($flavor_value), "info");
     }
 
-    push @values, ["success","$token",0];
+    push @values, ["success","",0];
     return( \@values );
 }
 
@@ -379,8 +520,8 @@ sub unincormanage
 	my $token = $opt->{t};
 	my $tenantid = $opt->{z};
 	my $vmid = $opt->{i};
-	my $url = gain_service_url("unincorperate");
-	$url =~ s/^(.*)(tenantid)(.*)(vmid)/$1$tenantid$3$vmid/;	
+	my $url = gain_conf_value("url","unincorperate");
+	$url =~ s/^(.*)(tenantid)(.*)(vmid)$/$1$tenantid$3$vmid/;	
 	my $delete_return_value;
 	$delete_return_value = delete_request($token,$url);
 	if($delete_return_value =~ /success/){
@@ -395,23 +536,15 @@ sub unincormanage
 
 sub create_vm
 {
-	my $token = shift;
+	my $token_id= shift;
 	my $vm_parameter = shift;
-	my $token_id = $token->{access}->{token}->{id};
-	my $url;
-	my $service_info = $token->{access}->{serviceCatalog};
-	foreach my $tmp_value (@$service_info){
-		if ($tmp_value->{type} eq "compute"){
-			$url = $tmp_value->{endpoints}[0]->{adminURL};
-			last;
-		}
-	}
+	my $user_tenant = shift;
+	my $url = gain_conf_value("url","servers");
 
-
+	$url =~ s/^(.*)(tenantid)(.*)$/$1$user_tenant$3/;	
+    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>".Dumper($url), "info");
 	my %flavor_data = {};
 	my $vm_return_value = ();
-	
-	$url .= "/servers";
 	
 	my $vm_name = $vm_parameter->{vm_name};
 	my $image_id = $vm_parameter->{image_id};
@@ -579,18 +712,11 @@ sub get_port_id
 
 sub generate_network
 {
-	my $token = shift;
+	my $token_id = shift;
 	my $vmname = shift;
 	my @return_ports = ();
-	my $token_id = $token->{access}->{token}->{id};
-	my $url;
-	my $service_info = $token->{access}->{serviceCatalog};
-	foreach my $tmp_value (@$service_info){
-		if ($tmp_value->{type} eq "network"){
-			$url = $tmp_value->{endpoints}[0]->{adminURL};
-			last;
-		}
-	}
+
+	my $url = gain_conf_value("url","network");
 
 	#create network
 	my $network_return_value = ();
@@ -654,20 +780,13 @@ sub get_table_value
 
 sub generate_flavor
 {
-	my $token = shift;
+	my $token_id = shift;
 	my $vmname = shift;
-	my $token_id = $token->{access}->{token}->{id};
-	my $url;
-	my $service_info = $token->{access}->{serviceCatalog};
-	foreach my $tmp_value (@$service_info){
-		if ($tmp_value->{type} eq "compute"){
-			$url = $tmp_value->{endpoints}[0]->{adminURL};
-			last;
-		}
-	}
+	my $admin_tenant = shift;
+	my $url = gain_conf_value("url","flavor");
+	$url =~ s/^(.*)(tenantid)$/$1$admin_tenant/;	
 	my %flavor_data = {};
 	my $flavor_return_value = ();
-
 	
 	$flavor_data{name} = $vmname;
 	$flavor_data{vcpus} = ();
@@ -739,22 +858,13 @@ sub get_db_user_passwd{
 
 sub generate_image
 {
-	my $token = shift;
+	my $token_id = shift;
 	my $vmname = shift;
-	my $returned_image_id = ();
-
-	my $token_id = $token->{access}->{token}->{id};
+	my $returned_image_id;
 	
         #finde url
-	my $url;
-	my $service_info = $token->{access}->{serviceCatalog};
-	foreach my $tmp_value (@$service_info){
-		if ($tmp_value->{type} eq "image"){
-			$url = $tmp_value->{endpoints}[0]->{adminURL};
-			last;
-		}
-	}
-	$url .= "/v2/images";
+	my $url = gain_conf_value("url","image");
+	
 	# gian the infomation that related to image frome pcenter database based on vmname
 
 	 my $dict = get_db_user_passwd();
@@ -800,13 +910,8 @@ sub generate_image
 }
 sub generate_token
 {
-	my $parameter = shift;
-	my $ua = LWP::UserAgent->new;
-	my $version = ();#$parameter->{v};
-	my $tenant = $parameter->{t};
-	my $username = $parameter->{u};
-	my $password = $parameter->{p};
-
+	my $auth = shift;
+	my $post_data ="{\"auth\": $auth}";
         #Create a config
         my $Config = Config::Tiny->new;
     
@@ -818,8 +923,9 @@ sub generate_token
     
         #Reading properties
         my $rootproperty = $Config->{_}->{rootproperty};
-        my $website = $Config->{section}->{token}; 
-	
+        my $website = $Config->{url}->{token}; 
+
+	my $ua = LWP::UserAgent->new;
 	my $server_endpoint = "$website";
 
 	# set custom HTTP request header fields
@@ -829,8 +935,6 @@ sub generate_token
 
 	# add POST data to HTTP request body
 
-	my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
-	my $post_data ="{\"auth\": $auth}";
 
 	$req->content($post_data);
 
