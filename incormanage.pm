@@ -14,15 +14,198 @@ use Expect;
 use DBI;
 use LWP::UserAgent;
 use LWP::Simple;
-use Data::Dumper;  
 use JSON;
 use Config::Tiny;
 #use File::Lockfile;
+
+
+
+##############################################
+# Globals
+##############################################
+my %method = (
+    incormanage => \&incormanage_parse_args,
+    admintoken => \&admintoken_parse_args,
+    incorusers => \&incorusers_parse_args,
+    unincormanage => \&unincormanage_parse_args,
+);
+
 
 ##########################################################################
 # Parse the command line for options and operands
 ##########################################################################
 sub parse_args {
+
+    my $request = shift;
+    my $cmd     = $request->{command};
+
+    ###############################
+    # Invoke correct parse_args 
+    ###############################
+    my $result = $method{$cmd}( $request );
+    return( $result ); 
+}
+
+
+##########################################################################
+# Parse the command line for options and operands
+##########################################################################
+sub incorusers_parse_args {
+    #pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+    my $request = shift;
+    my %opt     = ();
+    my $cmd     = $request->{command};
+    my $args    = $request->{arg};
+
+    #############################################
+    # Responds with usage statement
+    #############################################
+    local *usage = sub { 
+        my $usage_string = pcenter::Usage->getUsage($cmd);
+        return( [ $_[0], $usage_string] );
+    };
+    #############################################
+    # Process command-line arguments
+    #############################################
+    if ( !defined( $args )) {
+        $request->{method} = $cmd;
+        return( \%opt );
+    }
+    #############################################
+    # Checks case in GetOptions, allows opts
+    # to be grouped (e.g. -vx), and terminates
+    # at the first unrecognized option.
+    #############################################
+    @ARGV = @$args;
+    $Getopt::Long::ignorecase = 0;
+    Getopt::Long::Configure( "bundling" );
+
+    if ( !GetOptions( \%opt, qw(V|verbose t=s) )) {
+        return( usage("There is command not support") );
+    }
+    ####################################
+    # Check for "-" with no option
+    ####################################
+    if ( grep(/^-$/, @ARGV )) {
+        return(usage( "Missing option: -" ));
+    }
+    ####################################
+    # No operands - add command name 
+    ####################################
+    $request->{method} = $cmd; 
+    return( \%opt );
+
+}
+
+
+
+##########################################################################
+# Parse the command line for options and operands
+##########################################################################
+sub admintoken_parse_args {
+    #pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+    my $request = shift;
+    my %opt     = ();
+    my $cmd     = $request->{command};
+    my $args    = $request->{arg};
+
+    #############################################
+    # Responds with usage statement
+    #############################################
+    local *usage = sub { 
+        my $usage_string = pcenter::Usage->getUsage($cmd);
+        return( [ $_[0], $usage_string] );
+    };
+    #############################################
+    # Process command-line arguments
+    #############################################
+    if ( !defined( $args )) {
+        $request->{method} = $cmd;
+        return( \%opt );
+    }
+    #############################################
+    # Checks case in GetOptions, allows opts
+    # to be grouped (e.g. -vx), and terminates
+    # at the first unrecognized option.
+    #############################################
+    @ARGV = @$args;
+    $Getopt::Long::ignorecase = 0;
+    Getopt::Long::Configure( "bundling" );
+
+    if ( !GetOptions( \%opt, qw(V|verbose t=s u=s p=s) )) {
+        return( usage("There is command not support") );
+    }
+    ####################################
+    # Check for "-" with no option
+    ####################################
+    if ( grep(/^-$/, @ARGV )) {
+        return(usage( "Missing option: -" ));
+    }
+    ####################################
+    # No operands - add command name 
+    ####################################
+    $request->{method} = $cmd; 
+    return( \%opt );
+
+}
+
+
+##########################################################################
+# Parse the command line for options and operands
+##########################################################################
+sub unincormanage_parse_args {
+    #pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+    my $request = shift;
+    my %opt     = ();
+    my $cmd     = $request->{command};
+    my $args    = $request->{arg};
+
+    #############################################
+    # Responds with usage statement
+    #############################################
+    local *usage = sub { 
+        my $usage_string = pcenter::Usage->getUsage($cmd);
+        return( [ $_[0], $usage_string] );
+    };
+    #############################################
+    # Process command-line arguments
+    #############################################
+    if ( !defined( $args )) {
+        $request->{method} = $cmd;
+        return( \%opt );
+    }
+    #############################################
+    # Checks case in GetOptions, allows opts
+    # to be grouped (e.g. -vx), and terminates
+    # at the first unrecognized option.
+    #############################################
+    @ARGV = @$args;
+    $Getopt::Long::ignorecase = 0;
+    Getopt::Long::Configure( "bundling" );
+
+    if ( !GetOptions( \%opt, qw(V|verbose t=s z=s i=s) )) {
+        return( usage("There is command not support") );
+    }
+    ####################################
+    # Check for "-" with no option
+    ####################################
+    if ( grep(/^-$/, @ARGV )) {
+        return(usage( "Missing option: -" ));
+    }
+    ####################################
+    # No operands - add command name 
+    ####################################
+    $request->{method} = $cmd; 
+    return( \%opt );
+
+}
+
+
+
+##########################################################################
+# Parse the command line for options and operands
+##########################################################################
+sub incormanage_parse_args {
     #pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
     my $request = shift;
     my %opt     = ();
@@ -70,6 +253,85 @@ sub parse_args {
 }
 
 
+sub incorusers
+{
+    my $request = shift;
+    my $hash    = shift;
+    my $exp     = shift;
+    my $hwtype  = @$exp[2];
+    my $opt     = $request->{opt};
+    my @values  = ();
+    my $Rc = undef;
+    my $return_value = ();
+    my @vmnames = split(/,/,$opt->{v});#"aixvm111";
+
+    #my $url = "http://192.168.137.22:5000/v3/users";
+    my $url = gain_service_url("user_list");
+    pcenter::MsgUtils->log("#######################[#".Dumper($url), "info");
+    my $token = $opt->{t};
+    my $users = get_request($token,$url)->decoded_content;
+    my $users_hash = decode_json($users);
+    my $user_list ;
+    foreach my $tmp_user_value (@{$users_hash->{users}}){
+	$user_list .= $tmp_user_value->{name}.",";
+    }	
+    $user_list =~ s/^(.*),$/$1/;
+	
+    if(defined ($users_hash->{users})){
+    	push @values, ["success","$user_list",0];
+    }else{
+    	push @values, ["fail","",0];
+    }
+
+
+    return( \@values );
+}
+
+
+sub admintoken
+{
+    pcenter::MsgUtils->log("#######################[#".Dumper(@_), "info");
+    my $request = shift;
+    my $hash    = shift;
+    my $exp     = shift;
+    my $hwtype  = @$exp[2];
+    my $opt     = $request->{opt};
+    my @values  = ();
+    my $Rc = undef;
+    my $return_value = ();
+    my @vmnames = split(/,/,$opt->{v});#"aixvm111";
+
+    my $token = generate_token($opt)->{access}->{token}->{id};
+	
+    if(defined ($token)){
+    	push @values, ["success","$token",0];
+    }else{
+    	push @values, ["fail","",0];
+    }
+
+    return( \@values );
+}
+
+sub gain_service_url
+{	
+	my $service_name = shift;
+        #Create a config
+        my $Config = Config::Tiny->new;
+    
+        #Open the config
+        my $config_path = "/etc/pcenter/openstack.conf";
+        $Config = Config::Tiny->read($config_path);
+        $Config = Config::Tiny->read($config_path, 'utf8' ); # Neither ':' nor '<:' prefix!
+        $Config = Config::Tiny->read($config_path, 'encoding(iso-8859-1)');
+    
+        #Reading properties
+        my $rootproperty = $Config->{_}->{rootproperty};
+        my $website = $Config->{section}->{$service_name}; 
+	
+	my $server_endpoint = "$website";
+	return $server_endpoint ;
+}
+
 ############################################################################
 # Creates/changes logical partitions 
 ##########################################################################
@@ -103,6 +365,33 @@ sub incormanage {
     push @values, ["success","$token",0];
     return( \@values );
 }
+
+sub unincormanage
+{
+	my $request = shift;
+	my $hash    = shift;
+	my $exp     = shift;
+	my $hwtype  = @$exp[2];
+	my $opt     = $request->{opt};
+	my @values  = ();
+	my $Rc = undef;
+
+	my $token = $opt->{t};
+	my $tenantid = $opt->{z};
+	my $vmid = $opt->{i};
+	my $url = gain_service_url("unincorperate");
+	$url =~ s/^(.*)(tenantid)(.*)(vmid)/$1$tenantid$3$vmid/;	
+	my $delete_return_value;
+	$delete_return_value = delete_request($token,$url);
+	if($delete_return_value =~ /success/){
+		push @values, ["success","$delete_return_value",0];
+	}else{
+		push @values, ["fail","$delete_return_value",1];
+	}
+	return( \@values );
+
+}
+
 
 sub create_vm
 {
@@ -547,16 +836,37 @@ sub generate_token
 
 	my $resp = $ua->request($req);
 	my $return_value;
+	my $token_json = $resp->decoded_content;
+	my $token_hash = decode_json($token_json);
+	$return_value = $token_hash;
+
+	return $return_value;
+
+}
+
+sub delete_request
+{
+	my $token = shift;
+	my $url = shift;
+	my $ua = LWP::UserAgent->new;
+	my $server_endpoint = $url;
+
+	# set custom HTTP request header fields
+	my $req = HTTP::Request->new(DELETE  => $server_endpoint);
+	#$req->header('content-type' => 'application/octet-stream');
+	$req->header('x-auth-token' => "$token");
+
+
+	my $resp = $ua->request($req);
+	my $return_value;
 	if ($resp->is_success) {
-		 my $token_json = $resp->decoded_content;
-    		 my $token_hash = decode_json($token_json);
-		 $return_value = $token_hash;
+		$return_value = "success";
 	}
 	else {
+		$return_value = "fail !";
 	}
 	
 	return $return_value;
-
 }
 
 sub get_request
@@ -572,14 +882,8 @@ sub get_request
 
 	my $resp = $ua->request($req);
 	my $return_value;
-	if ($resp->is_success) {
-		$return_value = $resp;
-	}
-	else {
-		$return_value = "fail !";
-	}
 	
-	return $return_value;
+	return  $resp;
 }
 
 sub put_request
