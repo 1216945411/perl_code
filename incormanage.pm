@@ -15,6 +15,7 @@ use DBI;
 use LWP::UserAgent;
 use LWP::Simple;
 use JSON;
+#use JSON::XS;
 use Config::Tiny;
 #use File::Lockfile;
 
@@ -131,7 +132,7 @@ sub incortoken_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s t=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -182,7 +183,7 @@ sub admintoken_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s t=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -385,12 +386,17 @@ sub incortoken
 
     my $username = $opt->{u}; 
     my $password = $opt->{p}; 
+    my $tenant   = $opt->{t}; 
 
-    my $auth = "{\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
+    my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
     my $token_info = generate_token($auth);
     my $token = $token_info->{access}->{token}->{id};
     my $user_id = $token_info->{access}->{user}->{id}; 
+=pod
+    my $user_id = $token_info->{access}->{user}->{id}; 
     my $tenant_id = general_tenant_id($token,$user_id);
+=cut
+    my $tenant_id = get_tenant_id($token,$user_id);
 	
     if(defined ($token)){
     	push @values, ["success","$token,$tenant_id",0];
@@ -415,18 +421,7 @@ sub admintoken
 
     my $username = $opt->{u}; 
     my $password = $opt->{p}; 
-    #Create a config
-    my $Config = Config::Tiny->new;
-
-    #Open the config
-    my $config_path = "/etc/pcenter/openstack.conf";
-    $Config = Config::Tiny->read($config_path);
-    $Config = Config::Tiny->read($config_path, 'utf8' ); # Neither ':' nor '<:' prefix!
-    $Config = Config::Tiny->read($config_path, 'encoding(iso-8859-1)');
-
-    #Reading properties
-    my $tenant = $Config->{tenant}->{administrator};
-
+    my $tenant = $opt->{t};
     my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
     my $token_info = generate_token($auth);
     my $token = $token_info->{access}->{token}->{id};
@@ -438,9 +433,13 @@ sub admintoken
 		    last;
 	    }
     }
-	
+=pod
+    my $return_value = {'tokenid'=>$token,'tenantid'=>$tenant_id};  	
+    $return_value = to_json($return_value);
+=cut
     if(defined ($is_admin)){
     	push @values, ["success","$token,$tenant_id",0];
+    #	push @values, ["success","$return_value",0];
     }else{
     	push @values, ["fail","",1];
     }
@@ -489,6 +488,7 @@ sub incormanage {
     my $usertoken = $opt->{u};
     my $usertenant = $opt->{p};
     my $token = generate_token($opt);
+    my $incor_return ;
     foreach my $vmname(@vmnames){
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    my $image_value = generate_image($admintoken,$vmname);
@@ -500,10 +500,10 @@ sub incormanage {
 	    $vm_parameter{vm_name} = $vmname;
 	    $vm_parameter{vm_ports} = \@network_value;
 	    my $vm_ret_val = create_vm($usertoken,\%vm_parameter,$usertenant);
-    	    pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>".Dumper($flavor_value), "info");
+	    $incor_return .= "$vmname:$vm_ret_val,";
     }
-
-    push @values, ["success","",0];
+    $incor_return =~ s/^(.*),$/$1/; 
+    push @values, ["success","$incor_return",0];
     return( \@values );
 }
 
@@ -542,10 +542,8 @@ sub create_vm
 	my $url = gain_conf_value("url","servers");
 
 	$url =~ s/^(.*)(tenantid)(.*)$/$1$user_tenant$3/;	
-    	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>".Dumper($url), "info");
 	my %flavor_data = {};
 	my $vm_return_value = ();
-	
 	my $vm_name = $vm_parameter->{vm_name};
 	my $image_id = $vm_parameter->{image_id};
 	my $flavor_id = $vm_parameter->{flavor_id};
@@ -776,8 +774,6 @@ sub get_table_value
 
 
 
-
-
 sub generate_flavor
 {
 	my $token_id = shift;
@@ -804,8 +800,17 @@ sub generate_flavor
 
 	$flavor_data{vcpus} = $info->{cpu_logic};
 	$flavor_data{ram} = $info->{memory_total};
-	$flavor_data{disk} = 1;
-	
+        my $disks = get_table_values("disk_name","t_disk",$vmname);
+        my $flavor_value;
+        foreach my $tmp_disk (@$disks){
+                my $disk_belong_vg = get_table_value("disk_belong_vg","t_disk","disk_name",$tmp_disk->{disk_name})->{disk_belong_vg};
+                if($disk_belong_vg eq "rootvg"){
+                my $disk_size = get_table_value("disk_total_size","t_disk","disk_name",$tmp_disk->{disk_name})->{disk_total_size};
+                        $flavor_value += $disk_size;
+                }     
+
+        }     
+        $flavor_data{disk} = $flavor_value;
 
 	$url .= "/flavors";
 	my $get_url = $url."/detail";
@@ -825,7 +830,8 @@ sub generate_flavor
 	my $tem_ram = $flavor_data{ram};
 	my $tem_disk = $flavor_data{disk};
 
-	my $flavor_data = "{\"name\":\"$vmname\",\"ram\":\"$tem_ram\",\"vcpus\":\"$tem_vcpus\",\"disk\":\"$tem_disk\"}";
+	my $flavor_name = "$vmname.$flavor_data{disk}.$flavor_data{vcpus}.$flavor_data{ram}";
+	my $flavor_data = "{\"name\":\"$flavor_name \",\"ram\":\"$tem_ram\",\"vcpus\":\"$tem_vcpus\",\"disk\":\"$tem_disk\"}";
 	my $post_data = "{\"flavor\":$flavor_data}"; 
 	my $flavor_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
 
@@ -960,7 +966,6 @@ sub delete_request
 	#$req->header('content-type' => 'application/octet-stream');
 	$req->header('x-auth-token' => "$token");
 
-
 	my $resp = $ua->request($req);
 	my $return_value;
 	if ($resp->is_success) {
@@ -1035,15 +1040,8 @@ sub post_request
 	$req->content($post_data);
 
 	my $resp = $ua->request($req);
-	my $return_value;
-	if ($resp->is_success) {
-		$return_value = $resp;
-	}
-	else {
-		$return_value = "fail !";
-	}
 	
-	return $return_value;
+	return $resp;
 }
 
 1;
