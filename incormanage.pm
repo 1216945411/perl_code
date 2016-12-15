@@ -183,7 +183,7 @@ sub admintoken_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s t=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -386,17 +386,13 @@ sub incortoken
 
     my $username = $opt->{u}; 
     my $password = $opt->{p}; 
-    my $tenant   = $opt->{t}; 
+    my $tenant = $opt->{t};
 
     my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
     my $token_info = generate_token($auth);
     my $token = $token_info->{access}->{token}->{id};
-    my $user_id = $token_info->{access}->{user}->{id}; 
-=pod
-    my $user_id = $token_info->{access}->{user}->{id}; 
-    my $tenant_id = general_tenant_id($token,$user_id);
-=cut
-    my $tenant_id = get_tenant_id($token,$user_id);
+    my $tenant_id = $token_info->{access}->{token}->{tenant}->{id};
+
 	
     if(defined ($token)){
     	push @values, ["success","$token,$tenant_id",0];
@@ -421,7 +417,18 @@ sub admintoken
 
     my $username = $opt->{u}; 
     my $password = $opt->{p}; 
-    my $tenant = $opt->{t};
+    #Create a config
+    my $Config = Config::Tiny->new;
+
+    #Open the config
+    my $config_path = "/etc/pcenter/openstack.conf";
+    $Config = Config::Tiny->read($config_path);
+    $Config = Config::Tiny->read($config_path, 'utf8' ); # Neither ':' nor '<:' prefix!
+    $Config = Config::Tiny->read($config_path, 'encoding(iso-8859-1)');
+
+    #Reading properties
+    my $tenant = $Config->{tenant}->{administrator};
+
     my $auth = "{\"tenantName\": \"$tenant\",\"passwordCredentials\": {\"username\": \"$username\", \"password\": \"$password\"}}";
     my $token_info = generate_token($auth);
     my $token = $token_info->{access}->{token}->{id};
@@ -435,11 +442,12 @@ sub admintoken
     }
 =pod
     my $return_value = {'tokenid'=>$token,'tenantid'=>$tenant_id};  	
-    $return_value = to_json($return_value);
+    my $json = new JSON;
+    my $json_text = $json->pretty->encode ($return_value);
 =cut
     if(defined ($is_admin)){
     	push @values, ["success","$token,$tenant_id",0];
-    #	push @values, ["success","$return_value",0];
+    	#push @values, ["success","$json_text",0];
     }else{
     	push @values, ["fail","",1];
     }
@@ -488,20 +496,32 @@ sub incormanage {
     my $usertoken = $opt->{u};
     my $usertenant = $opt->{p};
     my $token = generate_token($opt);
-    my $incor_return ;
+    my $incor_return ; 
     foreach my $vmname(@vmnames){
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    my $image_value = generate_image($admintoken,$vmname);
-	    my @network_value = generate_network($admintoken,$vmname);
+	    my @network_value = generate_network($admintoken,$usertoken,$usertenant,$vmname);
 
+	    unless($flavor_value){
+		    $flavor_value = "fail";
+	    }
+	    unless ($image_value){
+		    $image_value = "fail";
+	    }
+	    unless($network_value[0]){
+		    $network_value[0] = "fail";
+	    }   
 	    my %vm_parameter;
 	    $vm_parameter{image_id} = $image_value;
 	    $vm_parameter{flavor_id} = $flavor_value;
 	    $vm_parameter{vm_name} = $vmname;
 	    $vm_parameter{vm_ports} = \@network_value;
-	    my $vm_ret_val = create_vm($usertoken,\%vm_parameter,$usertenant);
-	    $incor_return .= "$vmname:$vm_ret_val,";
-    }
+	    my $vm_ret_val = create_vm ($usertoken,\%vm_parameter,$usertenant);
+	    unless ($vm_ret_val){
+		    $vm_ret_val = "fail";
+	    }
+	    $incor_return .= "$vmname:$flavor_value:$image_value:$network_value[0]:$vm_ret_val,";
+    } 
     $incor_return =~ s/^(.*),$/$1/; 
     push @values, ["success","$incor_return",0];
     return( \@values );
@@ -571,6 +591,7 @@ sub get_subnet_id
 	my $gateway_ip = shift;
 	my $vmname = shift;
 	my $network_return_value = shift;
+	my $usertenant = shift;
 
 	my $cidr = $vm_ip;	
 	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
@@ -634,6 +655,7 @@ sub get_net_id
 	my $url	= shift;
 	my $vlan_id = shift;
 	my $vmname = shift;
+	my $usertenant = shift;
 	my $network_url = $url."v2.0/networks";
         my $network_return_value ;
 	
@@ -650,7 +672,7 @@ sub get_net_id
 	}
 
 	unless($create_net_flag){
-		my $create_network_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
+		my $create_network_parameter = "{\"name\": \"$vmname\",\"tenant_id\":\"$usertenant\",\"admin_state_up\": true,\"provider:network_type\":\"vxlan\",\"provider:segmentation_id\":\"$vlan_id\"}";
 		my $post_data = "{\"network\":$create_network_parameter}";
 		my $network_post_value = post_request($token_id,$network_url,$post_data)->decoded_content;	
 		my $network_post_data_hash = decode_json($network_post_value);
@@ -668,6 +690,7 @@ sub get_port_id
 	my $network_return_value = shift;
 	my $subnet_return_value = shift;
 	my $vmname = shift;
+	my $usertenant = shift;
 
 
 	my $port_return_value = ();
@@ -695,7 +718,7 @@ sub get_port_id
 		}
 	}
 	unless($create_port_flag){
-		my $create_ports_parameter = "{\"name\": \"$vmname\",\"admin_state_up\": true,
+		my $create_ports_parameter = "{\"name\": \"$vmname\",\"tenant_id\":\"$usertenant\",\"admin_state_up\": true,
 		   \"network_id\":\"$network_return_value\",\"binding:vnic_type\":\"normal\",
 		   \"fixed_ips\":[{\"subnet_id\":\"$subnet_return_value\",\"ip_address\":\"$port_ip\"}]}";
 		my $post_data = "{\"port\":$create_ports_parameter}";
@@ -710,7 +733,9 @@ sub get_port_id
 
 sub generate_network
 {
-	my $token_id = shift;
+	my $admintoken = shift;
+	my $usertoken = shift;
+	my $usertenant = shift;
 	my $vmname = shift;
 	my @return_ports = ();
 
@@ -726,9 +751,9 @@ sub generate_network
 		my $eth_ip = get_table_value("ip","t_network","eth",$tmp_eth->{eth});
 		my $eth_gateway = get_table_value("gateway","t_network","eth",$tmp_eth->{eth});
 
-		my $net_id = get_net_id($token_id,$url,$eth_vlan->{'vlan'},$vmname);  
-		my $subnet_id = get_subnet_id($token_id,$url,$eth_ip->{'ip'},$eth_gateway->{'gateway'},$vmname,$net_id);  
-		my $port_id = get_port_id($token_id,$url,$eth_ip->{'ip'},$net_id,$subnet_id,$vmname);
+		my $net_id = get_net_id($admintoken,$url,$eth_vlan->{'vlan'},$vmname,$usertenant);  
+		my $subnet_id = get_subnet_id($admintoken,$url,$eth_ip->{'ip'},$eth_gateway->{'gateway'},$vmname,$net_id);  
+		my $port_id = get_port_id($admintoken,$url,$eth_ip->{'ip'},$net_id,$subnet_id,$vmname,$usertenant,$usertenant);
 		push @return_ports,$port_id;	
 	}
 	return  @return_ports;	
@@ -774,6 +799,8 @@ sub get_table_value
 
 
 
+
+
 sub generate_flavor
 {
 	my $token_id = shift;
@@ -800,17 +827,8 @@ sub generate_flavor
 
 	$flavor_data{vcpus} = $info->{cpu_logic};
 	$flavor_data{ram} = $info->{memory_total};
-        my $disks = get_table_values("disk_name","t_disk",$vmname);
-        my $flavor_value;
-        foreach my $tmp_disk (@$disks){
-                my $disk_belong_vg = get_table_value("disk_belong_vg","t_disk","disk_name",$tmp_disk->{disk_name})->{disk_belong_vg};
-                if($disk_belong_vg eq "rootvg"){
-                my $disk_size = get_table_value("disk_total_size","t_disk","disk_name",$tmp_disk->{disk_name})->{disk_total_size};
-                        $flavor_value += $disk_size;
-                }     
-
-        }     
-        $flavor_data{disk} = $flavor_value;
+	$flavor_data{disk} = 1;
+	
 
 	$url .= "/flavors";
 	my $get_url = $url."/detail";
@@ -829,9 +847,7 @@ sub generate_flavor
 	my $tem_vcpus = $flavor_data{vcpus};
 	my $tem_ram = $flavor_data{ram};
 	my $tem_disk = $flavor_data{disk};
-
-	my $flavor_name = "$vmname.$flavor_data{disk}.$flavor_data{vcpus}.$flavor_data{ram}";
-	my $flavor_data = "{\"name\":\"$flavor_name \",\"ram\":\"$tem_ram\",\"vcpus\":\"$tem_vcpus\",\"disk\":\"$tem_disk\"}";
+	my $flavor_data = "{\"name\":\"$vmname\",\"ram\":\"$tem_ram\",\"vcpus\":\"$tem_vcpus\",\"disk\":\"$tem_disk\"}";
 	my $post_data = "{\"flavor\":$flavor_data}"; 
 	my $flavor_post_value = post_request($token_id,$url,$post_data)->decoded_content;	
 
@@ -966,6 +982,7 @@ sub delete_request
 	#$req->header('content-type' => 'application/octet-stream');
 	$req->header('x-auth-token' => "$token");
 
+
 	my $resp = $ua->request($req);
 	my $return_value;
 	if ($resp->is_success) {
@@ -990,7 +1007,6 @@ sub get_request
 	$req->header('x-auth-token' => "$token");
 
 	my $resp = $ua->request($req);
-	my $return_value;
 	
 	return  $resp;
 }
@@ -1040,7 +1056,7 @@ sub post_request
 	$req->content($post_data);
 
 	my $resp = $ua->request($req);
-	
+
 	return $resp;
 }
 
