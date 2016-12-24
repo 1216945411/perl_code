@@ -16,6 +16,8 @@ use LWP::UserAgent;
 use LWP::Simple;
 use JSON;
 #use JSON::XS;
+use Net::CIDR;
+use Net::CIDR ':all';
 use Config::Tiny;
 #use File::Lockfile;
 
@@ -132,7 +134,7 @@ sub incortoken_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s t=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose u=s p=s t=s ) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -286,7 +288,7 @@ sub incormanage_parse_args {
     $Getopt::Long::ignorecase = 0;
     Getopt::Long::Configure( "bundling" );
 
-    if ( !GetOptions( \%opt, qw(V|verbose a=s t=s u=s p=s v=s) )) {
+    if ( !GetOptions( \%opt, qw(V|verbose a=s t=s u=s p=s v=s z=s) )) {
         return( usage("There is command not support") );
     }
     ####################################
@@ -524,9 +526,24 @@ sub incormanage {
     my $admintenant = $opt->{t};
     my $usertoken = $opt->{u};
     my $usertenant = $opt->{p};
+    my $available_zone = $opt->{z};
     my $token = generate_token($opt);
     my $incor_return ; 
     foreach my $vmname(@vmnames){
+=pod
+	    my $az_verification = az_verification($available_zone, $admintoken, $admintenant);
+	    if ($az_verification->{rc} == 1){
+		    push @values,["fail","az_verification $az_verification->{message}",0];
+		    return( \@values );
+	    }
+	    my $az_suf = get_available_zone($vmname,$admintoken, $admintenant);
+	    if ($az_suf->{rc} == 1){
+		    push @values,["fail","az_suf $az_suf->{message}",0];
+		    return( \@values );
+	    }
+	    $available_zone .= $az_suf->{message};
+=cut
+
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    if ($flavor_value->{rc} == 1){
 		    push @values,["fail","flavor $flavor_value->{message}",0];
@@ -553,20 +570,43 @@ sub incormanage {
 	    my %vm_parameter;
 	    $vm_parameter{image_id} = $image_id;
 	    $vm_parameter{flavor_id} = $flavor_id;
+	    $vm_parameter{available_zone} = $available_zone;
 	    $vm_parameter{vm_name} = $vmname;
 	    $vm_parameter{vm_ports} = \@port;
 	    my $vm_ret_val = create_vm ($usertoken,\%vm_parameter,$usertenant);
-	    if ($image_value->{rc} == 1){
-		    push @values,["fail","vm $image_value->{message}",0];
+	    if ($vm_ret_val->{rc} == 1){
+		    push @values,["fail","vm $vm_ret_val->{message}",0];
 		    return( \@values );
 	    }
 	    my $vm_id = $vm_ret_val->{server}->{id};
+	    attach_lv($usertoken,$usertenant,$vm_id);
 	    $incor_return .= "$vmname:$flavor_id:$image_id:$port[0]:$vm_id,";
-
    } 
     $incor_return =~ s/^(.*),$/$1/; 
     push @values, ["success","$incor_return",0];
     return( \@values );
+}
+
+sub attach_lv
+{
+	my $usertoken = shift;
+	my $usertenant = shift;
+	my $vm_id = shift;
+	my $attach_lv_reval;
+	while(1){
+		my $vm_current_st ;	
+
+		if($vm_current_st->{rc}){
+			return 	$vm_current_st;
+		}
+		if($vm_current_st->{server}->{status} eq "ACTIVE"){
+		}elsif($vm_current_st->{server}->{status} eq "ERROR"){
+			$attach_lv_reval->{rc} = 1;
+			$attach_lv_reval->{massage} = "create vm fail";
+			return $attach_lv_reval;
+		}
+	}
+		
 }
 
 sub unincormanage
@@ -613,19 +653,22 @@ sub create_vm
 	my $vm_name = $vm_parameter->{vm_name};
 	my $image_id = $vm_parameter->{image_id};
 	my $flavor_id = $vm_parameter->{flavor_id};
+	my $available_zone = $vm_parameter->{available_zone};
 	my $vm_ports ;
 	foreach my $tmp_port_value (@{$vm_parameter->{vm_ports}}){
 		$vm_ports .= "{\"port\":\"$tmp_port_value\"},";
 	}	
 	$vm_ports =~ s/^(.*),$/$1/;
 
-	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
+	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"availability_zone\":\"$available_zone\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
 	my $req_parameter;
 	$req_parameter->{'type'} = "POST";
 	$req_parameter->{'address'} = $url;
 	$req_parameter->{'token'} = $token_id;
 	$req_parameter->{'data'} = $post_data;
+    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 	my $vm_post_value = http_request($req_parameter);
+    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_value), "info");
 	if($vm_post_value->{rc}){
 		return $vm_post_value;
 	}
@@ -640,13 +683,16 @@ sub get_subnet_id
 	my $token_id = shift;
 	my $url	= shift;
 	my $vm_ip = shift;
+	my $vm_mask = shift;
 	my $gateway_ip = shift;
 	my $vmname = shift;
 	my $network_return_value = shift;
 	my $usertenant = shift;
-
-	my $cidr = $vm_ip;	
-	$cidr =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.0\/24/;
+	
+	$vm_ip = ();
+	my $cidr;
+	$cidr = Net::CIDR::addrandmask2cidr($vm_ip, $vm_mask);
+	
 	my $subnet_return_value = ();
 
 	my $subnet_url = $url."v2.0/subnets";
@@ -686,7 +732,7 @@ sub get_subnet_id
 		my $end_num = '254';
 		if(2 == $create_subnet_flag){
 			$start_num = $vm_ip; 
-			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)./$4/;
+			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)/$4/;
 			$end_num = $start_num; 
 		}
 		my $start_ip =$vm_ip;
@@ -848,9 +894,23 @@ sub generate_network
 		my $net_id;
 		my $subnet_id;
 		my $port_id;
-		my $eth_vlan = get_table_value("vlan","t_vlan","eth",$tmp_eth->{eth});
-		my $eth_ip = get_table_value("ip","t_network","eth",$tmp_eth->{eth});
-		my $eth_gateway = get_table_value("gateway","t_network","eth",$tmp_eth->{eth});
+		my $sql_statement = "SELECT vlan FROM t_vlan WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
+		my $eth_vlan = get_table_value($sql_statement);
+		if(undef $eth_vlan){
+			next;	
+		}	
+		my $sql_statement = "SELECT ip FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
+		my $eth_ip = get_table_value($sql_statement);
+		if(undef $eth_ip){
+			next;	
+		}
+		my $sql_statement = "SELECT mask FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
+		my $eth_mask = get_table_value($sql_statement);
+		if(undef $eth_mask){
+			next;	
+		}
+		my $sql_statement = "SELECT gateway FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
+		my $eth_gateway = get_table_value($sql_statement);
 
 		my $net_value = get_net_id($admintoken,$url,$eth_vlan->{'vlan'},$vmname,$usertenant);  
 		if($net_value->{rc}){
@@ -858,7 +918,7 @@ sub generate_network
 		}else{
 			$net_id = $net_value->{id};	
 		}
-		my $subnet_value = get_subnet_id($admintoken,$url,$eth_ip->{'ip'},$eth_gateway->{'gateway'},$vmname,$net_id);  
+		my $subnet_value = get_subnet_id($admintoken,$url,$eth_ip->{'ip'},$eth_mask->{'mask'},$eth_gateway->{'gateway'},$vmname,$net_id);  
 		if($subnet_value->{rc}){
 			return	$subnet_value;
 		}else{
@@ -897,12 +957,9 @@ sub get_table_values
 
 sub get_table_value
 {
-	my $condition_key = shift;
-	my $table_name = shift;
-	my $search_key = shift;
-	my $search_value = shift;
+	my $sql_statement = shift;
 	my  $dbd = $::dbd;
-	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where $search_key="$search_value" ;});
+	my $pre = $dbd->prepare( qq{$sql_statement});
 	$pre->execute();
 	my $return_value = $pre->fetchrow_hashref();
 	$pre->finish();
@@ -983,13 +1040,8 @@ sub generate_image
 
 	# gian the infomation that related to image frome pcenter database based on vmname
 
-	my  $dbd = $::dbd;
-	my $pre = $dbd->prepare( qq{SELECT os FROM t_vm where lpar_name="$vmname" ;});
-	$pre->execute();
-	my $info = $pre->fetchrow_hashref();
-	$pre->finish();
-
-	my $image_name = $info->{os};
+	my $sql_statement = "SELECT os FROM t_vm WHERE lpar_name = \"$vmname\"";
+	my $image_name = get_table_value($sql_statement)->{os};
 	my $get_url = $url."?name=$image_name";
 	my $req_parameter; 
 	$req_parameter->{'type'} = "GET";
@@ -1009,7 +1061,6 @@ sub generate_image
 
 			}	
 
-			my $image_name = get_table_value("os","t_vm","lpar_name",$vmname)->{os};
 			my $post_data ='{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "$image_name"}' ;
 			$post_data =~ s/^(.*)"(\$image_name)/$1"$image_name/;
 
@@ -1051,6 +1102,9 @@ sub generate_image
 			}
 	}
 }
+
+
+
 
 sub generate_token
 {
@@ -1102,5 +1156,80 @@ sub http_request
 	return $req_return;
 }
 
+sub get_available_zone
+{
+	my $vm_name = shift;
+	my $admintoken = shift;
+	my $admintenant = shift;
+
+	my $sql_statement = "SELECT parent FROM ppc  WHERE node = \"$vm_name\";";
+	my $server_name = get_table_value($sql_statement)->{parent};
+
+	my $url = gain_conf_value("url","flavor");
+	$url =~ s/^(.*)(tenantid)$/$1$admintenant\/os-hypervisors/;	
+	my $req_parameter;
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $url;
+	$req_parameter->{'token'} = $admintoken;
+	my $hypervisor_list = http_request($req_parameter);
+	if($hypervisor_list->{rc}){
+		return  $hypervisor_list ;
+	}
+	my $hypervisor_id;
+	foreach my $tmp_hypervisor (@{$hypervisor_list->{hypervisors}}){
+		if($tmp_hypervisor->{'hypervisor_hostname'} eq $server_name){
+			$hypervisor_id = $tmp_hypervisor->{id};
+			last;
+		}
+	}
+	 
+	$url .="/$hypervisor_id";
+	my $req_parameter;
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $url;
+	$req_parameter->{'token'} = $admintoken;
+	my $hypervisor_detail = http_request($req_parameter);
+	if($hypervisor_detail->{rc}){
+		return  $hypervisor_detail ;
+	}
+
+	my $host_name = $hypervisor_detail->{hypervisor}->{service}->{host};
+    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($host_name), "info");
+	my $az_revalue;
+	$az_revalue->{rc} = 0;
+	$az_revalue->{message} = "\:$host_name\:$server_name";
+	return $az_revalue;
+}
+
+sub az_verification
+{
+	my $available_zone = shift;
+	my $admintoken = shift;
+	my $admintenant = shift;
+	my $return_val;
+
+	my $url = gain_conf_value("url","flavor");
+	$url =~ s/^(.*)(tenantid)$/$1$admintenant\/os-availability-zone/;	
+	my $req_parameter;
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $url;
+	$req_parameter->{'token'} = $admintoken;
+	my $availability_zone_list = http_request($req_parameter);
+	if($availability_zone_list->{rc}){
+		return  $availability_zone_list ;
+	}
+	$return_val->{rc} = 1;
+	foreach my $tmp_availability_zone (@{$availability_zone_list->{availabilityZoneInfo}}){
+		#if(($tmp_availability_zone->{zoneName} eq $available_zone) and ($tmp_availability_zone->{zoneName}->{zoneState}->{available})){
+		if(($tmp_availability_zone->{zoneName}->{zoneState}->{available})){
+			$return_val->{rc} = 0;
+			last;
+		}
+	}
+	if($return_val->{rc}){
+		$return_val->{message} = " available zone disabled";
+	}	
+	return $return_val;
+}
 
 1;
