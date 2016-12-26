@@ -15,11 +15,9 @@ use DBI;
 use LWP::UserAgent;
 use LWP::Simple;
 use JSON;
-#use JSON::XS;
 use Net::CIDR;
 use Net::CIDR ':all';
 use Config::Tiny;
-#use File::Lockfile;
 
 
 
@@ -544,6 +542,7 @@ sub incormanage {
 	    $available_zone .= $az_suf->{message};
 =cut
 
+=pod
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    if ($flavor_value->{rc} == 1){
 		    push @values,["fail","flavor $flavor_value->{message}",0];
@@ -578,13 +577,43 @@ sub incormanage {
 		    push @values,["fail","vm $vm_ret_val->{message}",0];
 		    return( \@values );
 	    }
-	    my $vm_id = $vm_ret_val->{server}->{id};
-	    attach_lv($usertoken,$usertenant,$vm_id);
-	    $incor_return .= "$vmname:$flavor_id:$image_id:$port[0]:$vm_id,";
+=cut
+	    my $vm_id = "357c9d56-136c-4285-ae83-b3605f103eff";#$vm_ret_val->{server}->{id};
+	
+	    my $attach_value = attach_lv($usertoken,$usertenant,$vm_id,$vmname);
+	    if ($attach_value->{rc} == 1){
+		    push @values,["fail","attach lv: $attach_value->{message}",0];
+		    return( \@values );
+	    }
+	    #$incor_return .= "$vmname:$flavor_id:$image_id:$port[0]:$vm_id,";
    } 
     $incor_return =~ s/^(.*),$/$1/; 
     push @values, ["success","$incor_return",0];
     return( \@values );
+}
+
+sub get_vm_state
+{
+	my $usertoken = shift;
+	my $usertenant = shift;
+	my $vm_id = shift;
+    
+	my $url = gain_conf_value("url","flavor");
+	$url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id/;	
+	my $req_parameter;
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $url;
+	$req_parameter->{'token'} = $usertoken;
+	my $vm_st_response = http_request($req_parameter);
+	return $vm_st_response;
+}
+
+sub get_lv_info
+{
+    my $vmname = shift;
+    my $sql_statement = "select disk_name,disk_total_size from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
+    my $disks_info = get_table_values($sql_statement);
+    return $disks_info; 
 }
 
 sub attach_lv
@@ -592,21 +621,133 @@ sub attach_lv
 	my $usertoken = shift;
 	my $usertenant = shift;
 	my $vm_id = shift;
+	my $vm_name = shift;
 	my $attach_lv_reval;
+	my $req_num; 
 	while(1){
 		my $vm_current_st ;	
-
+		$vm_current_st = get_vm_state($usertoken,$usertenant,$vm_id);
 		if($vm_current_st->{rc}){
 			return 	$vm_current_st;
 		}
 		if($vm_current_st->{server}->{status} eq "ACTIVE"){
+			my $lv_info = get_lv_info($vm_name); 
+			my $url = gain_conf_value("url","flavor");
+			my $lv_url = $url;	
+			$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes/;	
+			my $req_parameter;
+			$req_parameter->{'type'} = "POST";
+			$req_parameter->{'address'} = $lv_url;
+			$req_parameter->{'token'} = $usertoken;
+			foreach my $tmp_lv_info(@$lv_info){
+				my $post_data =  "{\"volume\":{\"display_name\":\"$vm_name$tmp_lv_info->{disk_name}\",\"size\":$tmp_lv_info->{disk_total_size}}}";
+				$req_parameter->{'data'} = $post_data;
+				my $lv_post_value = http_request($req_parameter);
+				if($lv_post_value->{rc}){
+					$lv_post_value->{message} =~ s/(.*)/create lv: $1/; 	
+					return $lv_post_value;
+				}
+				my $lv_id = $lv_post_value->{volume}->{id};
+
+				my $req_lv_stat_url = $url;
+				$req_parameter->{'type'} = "GET";
+				$req_lv_stat_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_id/;	
+				$req_parameter->{'address'} = $req_lv_stat_url;
+				$req_parameter->{'token'} = $usertoken;
+				my $lv_status;
+				$lv_status = http_request($req_parameter);
+				my $lv_status_num;
+				while(1){
+
+					$lv_status = http_request($req_parameter);
+					$lv_status_num ++;
+					if(($lv_status->{volume}->{status} eq "error") or($lv_status_num > 10)){
+						my $lv_status;
+						$lv_status->{rc} = 1;
+						$lv_status->{message} = "create lv fail";
+						return $lv_status;
+					}
+					if($lv_status->{volume}->{status} eq "available"){
+						last;
+					}
+					sleep(2);
+				}
+	
+				$post_data =  "{\"volumeAttachment\":{\"volumeId\":\"$lv_id\"}}" ;
+				my $attach_lv_url = $url;
+				$attach_lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments/;	
+				$req_parameter->{'type'} = "POST";
+				$req_parameter->{'address'} = $attach_lv_url;
+				$req_parameter->{'data'} = $post_data;
+    				pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
+				my $attach_lv_value = http_request($req_parameter);
+    				pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($attach_lv_value), "info");
+				if($attach_lv_value->{rc}){
+					$attach_lv_value->{message} =~ s/(.*)/attach lv: $1/; 	
+					return $attach_lv_value;
+				}
+
+			}
+			$attach_lv_reval->{rc} = 0;
+			$attach_lv_reval->{message} = "atach lv success";
+
+			return $attach_lv_reval;
+
 		}elsif($vm_current_st->{server}->{status} eq "ERROR"){
 			$attach_lv_reval->{rc} = 1;
 			$attach_lv_reval->{massage} = "create vm fail";
 			return $attach_lv_reval;
 		}
+
+		sleep(20);
+		$req_num ++;
+		if($req_num > 5){
+			$attach_lv_reval->{rc} = 1;
+			$attach_lv_reval->{massage} = "attach lv fail";
+			return $attach_lv_reval;
+		}
 	}
-		
+}
+
+sub del_vm_lv
+{
+	my $usertoken = shift;
+	my $usertenant = shift;
+	my $vm_id = shift;
+	my $vm_name = shift;
+	my $detach_lv_reval;
+	my $url = gain_conf_value("url","flavor");
+	my $lv_url = $url;	
+	$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments\/$lv_uuid/;	
+	my $req_parameter;
+	$req_parameter->{'type'} = "DELETE";
+	$req_parameter->{'address'} = $lv_url;
+	$req_parameter->{'token'} = $usertoken;
+	my $lv_post_value = http_request($req_parameter);
+	if ($lv_post_value->{rc} == 1){
+		push @values,["fail","detach $lv_post_value->{message}",0];
+		return( \@values );
+	}
+
+	return $req_parameter;
+
+
+=pod
+    my $sql_statement = "select disk_name,uuid from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
+    my $disks_info = get_table_values($sql_statement);
+
+    foreach my $tmp_lv_info(@$disk_info){
+
+    }
+=cut
+    
+=pod
+	if ($flavor_value->{rc} == 1){
+		push @values,["fail","flavor $flavor_value->{message}",0];
+		return( \@values );
+	}
+=cut
+
 }
 
 sub unincormanage
@@ -625,6 +766,13 @@ sub unincormanage
 	my $url = gain_conf_value("url","unincorperate");
 	$url =~ s/^(.*)(tenantid)(.*)(vmid)$/$1$tenantid$3$vmid/;	
 	my $delete_return_value;
+	
+	my $del_lv_return = del_vm_lv(); 
+	if ($del_lv_return->{rc} == 1){
+		push @values,["fail","flavor $del_lv_return->{message}",0];
+		return( \@values );
+	}
+
 	my $req_parameter;
 	$req_parameter->{'type'} = "DELETE";
 	$req_parameter->{'address'} = $url;
@@ -660,15 +808,16 @@ sub create_vm
 	}	
 	$vm_ports =~ s/^(.*),$/$1/;
 
-	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"availability_zone\":\"$available_zone\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
+	#my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"availability_zone\":\"$available_zone\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
+	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
 	my $req_parameter;
 	$req_parameter->{'type'} = "POST";
 	$req_parameter->{'address'} = $url;
 	$req_parameter->{'token'} = $token_id;
 	$req_parameter->{'data'} = $post_data;
-    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
+    #	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 	my $vm_post_value = http_request($req_parameter);
-    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_value), "info");
+    #	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_value), "info");
 	if($vm_post_value->{rc}){
 		return $vm_post_value;
 	}
@@ -689,7 +838,6 @@ sub get_subnet_id
 	my $network_return_value = shift;
 	my $usertenant = shift;
 	
-	$vm_ip = ();
 	my $cidr;
 	$cidr = Net::CIDR::addrandmask2cidr($vm_ip, $vm_mask);
 	
@@ -726,6 +874,8 @@ sub get_subnet_id
 			}
 		}
 	}
+
+
 
 	if(5 >  $create_subnet_flag){
 		my $start_num = '2';
@@ -889,28 +1039,24 @@ sub generate_network
 	my $network_return_value = ();
 	my $network_url = $url."v2.0/networks";
 	my @return_values;
-	my $eths = get_table_values("eth","t_vlan",$vmname);
+    	my $sql_statement = "SELECT eth FROM t_vlan WHERE lpar_name = \"$vmname\";"; 
+	my $eths = get_table_values($sql_statement);
 	foreach my $tmp_eth (@$eths){
 		my $net_id;
 		my $subnet_id;
 		my $port_id;
 		my $sql_statement = "SELECT vlan FROM t_vlan WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
 		my $eth_vlan = get_table_value($sql_statement);
-		if(undef $eth_vlan){
-			next;	
-		}	
+			
 		my $sql_statement = "SELECT ip FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
 		my $eth_ip = get_table_value($sql_statement);
-		if(undef $eth_ip){
-			next;	
-		}
+		
 		my $sql_statement = "SELECT mask FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
 		my $eth_mask = get_table_value($sql_statement);
-		if(undef $eth_mask){
-			next;	
-		}
+		
 		my $sql_statement = "SELECT gateway FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
 		my $eth_gateway = get_table_value($sql_statement);
+
 
 		my $net_value = get_net_id($admintoken,$url,$eth_vlan->{'vlan'},$vmname,$usertenant);  
 		if($net_value->{rc}){
@@ -919,6 +1065,7 @@ sub generate_network
 			$net_id = $net_value->{id};	
 		}
 		my $subnet_value = get_subnet_id($admintoken,$url,$eth_ip->{'ip'},$eth_mask->{'mask'},$eth_gateway->{'gateway'},$vmname,$net_id);  
+
 		if($subnet_value->{rc}){
 			return	$subnet_value;
 		}else{
@@ -940,11 +1087,10 @@ sub generate_network
 
 sub get_table_values
 {
-	my $condition_key = shift;
-	my $table_name = shift;
-	my $search_key = shift;
+
+	my $sql_statement = shift;
 	my  $dbd = $::dbd;
-	my $pre = $dbd->prepare( qq{SELECT $condition_key  FROM $table_name where lpar_name="$search_key" ;});
+	my $pre = $dbd->prepare( qq{$sql_statement});
 	$pre->execute();
 	my @return_value;
 	while (my $tmp_value = $pre->fetchrow_hashref()){
@@ -1103,9 +1249,6 @@ sub generate_image
 	}
 }
 
-
-
-
 sub generate_token
 {
 	my $auth = shift;
@@ -1194,7 +1337,6 @@ sub get_available_zone
 	}
 
 	my $host_name = $hypervisor_detail->{hypervisor}->{service}->{host};
-    	#pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($host_name), "info");
 	my $az_revalue;
 	$az_revalue->{rc} = 0;
 	$az_revalue->{message} = "\:$host_name\:$server_name";
