@@ -542,7 +542,6 @@ sub incormanage {
 	    $available_zone .= $az_suf->{message};
 =cut
 
-=pod
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    if ($flavor_value->{rc} == 1){
 		    push @values,["fail","flavor $flavor_value->{message}",0];
@@ -577,15 +576,14 @@ sub incormanage {
 		    push @values,["fail","vm $vm_ret_val->{message}",0];
 		    return( \@values );
 	    }
-=cut
-	    my $vm_id = "357c9d56-136c-4285-ae83-b3605f103eff";#$vm_ret_val->{server}->{id};
+	    my $vm_id = $vm_ret_val->{server}->{id};
 	
 	    my $attach_value = attach_lv($usertoken,$usertenant,$vm_id,$vmname);
 	    if ($attach_value->{rc} == 1){
 		    push @values,["fail","attach lv: $attach_value->{message}",0];
 		    return( \@values );
 	    }
-	    #$incor_return .= "$vmname:$flavor_id:$image_id:$port[0]:$vm_id,";
+	    $incor_return .= "$vmname:$flavor_id:$image_id:$port[0]:$vm_id,";
    } 
     $incor_return =~ s/^(.*),$/$1/; 
     push @values, ["success","$incor_return",0];
@@ -679,9 +677,7 @@ sub attach_lv
 				$req_parameter->{'type'} = "POST";
 				$req_parameter->{'address'} = $attach_lv_url;
 				$req_parameter->{'data'} = $post_data;
-    				pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 				my $attach_lv_value = http_request($req_parameter);
-    				pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($attach_lv_value), "info");
 				if($attach_lv_value->{rc}){
 					$attach_lv_value->{message} =~ s/(.*)/attach lv: $1/; 	
 					return $attach_lv_value;
@@ -714,40 +710,73 @@ sub del_vm_lv
 	my $usertoken = shift;
 	my $usertenant = shift;
 	my $vm_id = shift;
-	my $vm_name = shift;
+	my $vmname;
 	my $detach_lv_reval;
 	my $url = gain_conf_value("url","flavor");
 	my $lv_url = $url;	
-	$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments\/$lv_uuid/;	
+	my $vm_detial_url = $url;
+	my $lv_uuid = "";
+	my @values;
 	my $req_parameter;
-	$req_parameter->{'type'} = "DELETE";
-	$req_parameter->{'address'} = $lv_url;
+	my $detach_value;
+
+	$vm_detial_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id/;	
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $vm_detial_url;
 	$req_parameter->{'token'} = $usertoken;
-	my $lv_post_value = http_request($req_parameter);
-	if ($lv_post_value->{rc} == 1){
-		push @values,["fail","detach $lv_post_value->{message}",0];
-		return( \@values );
+	my $vm_info = http_request($req_parameter);
+	$vmname = $vm_info->{server}->{name};
+	if ($vm_info ->{rc} == 1){
+		return $vm_info;
 	}
 
-	return $req_parameter;
-
-
-=pod
-    my $sql_statement = "select disk_name,uuid from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
-    my $disks_info = get_table_values($sql_statement);
-
-    foreach my $tmp_lv_info(@$disk_info){
-
-    }
-=cut
-    
-=pod
-	if ($flavor_value->{rc} == 1){
-		push @values,["fail","flavor $flavor_value->{message}",0];
-		return( \@values );
+	$req_parameter->{'type'} = "DELETE";
+	$req_parameter->{'token'} = $usertoken;
+        		
+	$vmname = "power03";	
+	my $sql_statement = "select disk_name,uuid from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
+	my $disks_info = get_table_values($sql_statement);
+	foreach my $tmp_lv_info(@$disks_info){
+		$lv_uuid = $tmp_lv_info->{uuid};
+		$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments\/$lv_uuid/;	
+		$req_parameter->{'address'} = $lv_url;
+		my $lv_post_value = http_request($req_parameter);
+		if ($lv_post_value->{rc} == 1){
+			return $lv_post_value;
+		}
+		
+		my $lv_info_url = $url;
+		$lv_info_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_uuid/;
+		$req_parameter->{'type'} = "GET";
+		$req_parameter->{'address'} = $lv_info_url;
+		$req_parameter->{'token'} = $usertoken;
+		my $lv_status_num ;
+		while(1){
+			my $lv_st_reval = http_request($req_parameter);
+			$lv_status_num ++;
+			if(($lv_status_num > 10)){
+				my $lv_status;
+				$lv_status->{rc} = 1;
+				$lv_status->{message} = "detach lv fail";
+				return $lv_status;
+			}
+			if($lv_st_reval->{volume}->{status} eq "available"){
+				last;
+			}
+			sleep(5);
+		}	
+		
+		# delete lv 	
+		$req_parameter->{'type'} = "DELETE";
+		my $rm_lv_return = http_request($req_parameter);
+		if($rm_lv_return->{rc}){
+			return $rm_lv_return;
+		}
 	}
-=cut
+	$detach_value->{rc} = 0;
+	$detach_value->{message} = "success";
 
+	return $detach_value;
 }
 
 sub unincormanage
@@ -767,9 +796,9 @@ sub unincormanage
 	$url =~ s/^(.*)(tenantid)(.*)(vmid)$/$1$tenantid$3$vmid/;	
 	my $delete_return_value;
 	
-	my $del_lv_return = del_vm_lv(); 
+	my $del_lv_return = del_vm_lv($token,$tenantid,$vmid); 
 	if ($del_lv_return->{rc} == 1){
-		push @values,["fail","flavor $del_lv_return->{message}",0];
+		push @values,["fail","unincor $del_lv_return->{message}",0];
 		return( \@values );
 	}
 
@@ -784,6 +813,7 @@ sub unincormanage
 		push @values, ["success","success",0];
 	}
 
+	push @values, ["success","success",0];
 	return( \@values );
 }
 
@@ -815,9 +845,7 @@ sub create_vm
 	$req_parameter->{'address'} = $url;
 	$req_parameter->{'token'} = $token_id;
 	$req_parameter->{'data'} = $post_data;
-    #	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 	my $vm_post_value = http_request($req_parameter);
-    #	pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>".Dumper($vm_post_value), "info");
 	if($vm_post_value->{rc}){
 		return $vm_post_value;
 	}
@@ -826,6 +854,13 @@ sub create_vm
 	return $vm_return_value;
 }
 
+sub ipsring2int
+{
+        my $ip = shift;
+        $ip =~  /(\d+).(\d+).(\d+).(\d+)/;
+        my $int_ip =  $1 * 256**3 + $2 * 256**2 + $3 * 256 + $4;
+        return $int_ip;
+}
 
 sub get_subnet_id
 {
@@ -856,10 +891,11 @@ sub get_subnet_id
 	 
 	my $create_subnet_flag = 0;
 	foreach my $tmp_subnet_value (@{$subnet_get_data_hash->{subnets}}){
-		if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
+		#if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
+		if( ($tmp_subnet_value->{'cidr'} eq $cidr)){
 			my $allocation_pools = $tmp_subnet_value->{'allocation_pools'};
 			foreach my $temp_pools (@$allocation_pools){
-				if(($vm_ip lt \$temp_pools->{'end'} ) and ($vm_ip gt $temp_pools->{'start'} )){
+				if((ipsring2int($vm_ip) >= ipsring2int($temp_pools->{'start'})) && (ipsring2int($vm_ip) <= ipsring2int($temp_pools->{'end'}))){
 					$create_subnet_flag = 5;
 					$subnet_return_value->{subnet}->{id} = $tmp_subnet_value->{'id'};
 					$subnet_return_value->{rc} = 0;
@@ -874,9 +910,6 @@ sub get_subnet_id
 			}
 		}
 	}
-
-
-
 	if(5 >  $create_subnet_flag){
 		my $start_num = '2';
 		my $end_num = '254';
