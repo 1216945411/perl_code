@@ -528,7 +528,6 @@ sub incormanage {
     my $token = generate_token($opt);
     my $incor_return ; 
     foreach my $vmname(@vmnames){
-=pod
 	    my $az_verification = az_verification($available_zone, $admintoken, $admintenant);
 	    if ($az_verification->{rc} == 1){
 		    push @values,["fail","az_verification $az_verification->{message}",0];
@@ -540,18 +539,17 @@ sub incormanage {
 		    return( \@values );
 	    }
 	    $available_zone .= $az_suf->{message};
-=cut
 
 	    my $flavor_value = generate_flavor($admintoken,$vmname,$admintenant);
 	    if ($flavor_value->{rc} == 1){
-		    push @values,["fail","flavor $flavor_value->{message}",0];
+		    push @values,["fail","flavor: $flavor_value->{message}",0];
 		    return( \@values );
 	    } 
 	    my $flavor_id = $flavor_value->{flavor}->{id};
 
 	    my $image_value = generate_image($admintoken,$vmname);
 	    if ($image_value->{rc} == 1){
-		    push @values,["fail","flavor $image_value->{message}",0];
+		    push @values,["fail","image: $image_value->{message}",0];
 		    return( \@values );
 	    }
 	    my $image_id = $image_value->{id};
@@ -560,7 +558,7 @@ sub incormanage {
 	    my @network_value = generate_network($admintoken,$usertoken,$usertenant,$vmname);
 	    foreach my $temp_net_val (@network_value){
 		    if (($temp_net_val->{rc} == 1) or ($temp_net_val->{port}->{id} eq "" )){
-			    push @values,["fail","network $temp_net_val->{message}",0];
+			    push @values,["fail","network: $temp_net_val->{message}",0];
 			    return( \@values );
 		    }
 		   push @port,$temp_net_val->{port}->{id};
@@ -609,8 +607,7 @@ sub get_vm_state
 sub get_lv_info
 {
     my $vmname = shift;
-    my $sql_statement = "select disk_name,disk_total_size from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
-    my $disks_info = get_table_values($sql_statement);
+    my $disks_info = get_table_values(qq{select disk_name,disk_total_size from t_disk where lpar_name=$vmname and disk_belong_vg!=rootvg;},"disk_total_size");
     return $disks_info; 
 }
 
@@ -628,78 +625,82 @@ sub attach_lv
 		if($vm_current_st->{rc}){
 			return 	$vm_current_st;
 		}
+
 		if($vm_current_st->{server}->{status} eq "ACTIVE"){
 			my $lv_info = get_lv_info($vm_name); 
-			my $url = gain_conf_value("url","flavor");
-			my $lv_url = $url;	
-			$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes/;	
-			my $req_parameter;
-			$req_parameter->{'type'} = "POST";
-			$req_parameter->{'address'} = $lv_url;
-			$req_parameter->{'token'} = $usertoken;
-			foreach my $tmp_lv_info(@$lv_info){
-				my $post_data =  "{\"volume\":{\"display_name\":\"$vm_name$tmp_lv_info->{disk_name}\",\"size\":$tmp_lv_info->{disk_total_size}}}";
-				$req_parameter->{'data'} = $post_data;
-				my $lv_post_value = http_request($req_parameter);
-				if($lv_post_value->{rc}){
-					$lv_post_value->{message} =~ s/(.*)/create lv: $1/; 	
-					return $lv_post_value;
-				}
-				my $lv_id = $lv_post_value->{volume}->{id};
-
-				my $req_lv_stat_url = $url;
-				$req_parameter->{'type'} = "GET";
-				$req_lv_stat_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_id/;	
-				$req_parameter->{'address'} = $req_lv_stat_url;
-				$req_parameter->{'token'} = $usertoken;
-				my $lv_status;
-				$lv_status = http_request($req_parameter);
-				my $lv_status_num;
-				while(1){
-
-					$lv_status = http_request($req_parameter);
-					$lv_status_num ++;
-					if(($lv_status->{volume}->{status} eq "error") or($lv_status_num > 10)){
-						my $lv_status;
-						$lv_status->{rc} = 1;
-						$lv_status->{message} = "create lv fail";
-						return $lv_status;
-					}
-					if($lv_status->{volume}->{status} eq "available"){
-						last;
-					}
-					sleep(2);
-				}
-	
-				$post_data =  "{\"volumeAttachment\":{\"volumeId\":\"$lv_id\"}}" ;
-				my $attach_lv_url = $url;
-				$attach_lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments/;	
+			if($lv_info ne undef){
+				my $url = gain_conf_value("url","flavor");
+				my $lv_url = $url;	
+				$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes/;	
+				my $req_parameter;
 				$req_parameter->{'type'} = "POST";
-				$req_parameter->{'address'} = $attach_lv_url;
-				$req_parameter->{'data'} = $post_data;
-				my $attach_lv_value = http_request($req_parameter);
-				if($attach_lv_value->{rc}){
-					$attach_lv_value->{message} =~ s/(.*)/attach lv: $1/; 	
-					return $attach_lv_value;
+				$req_parameter->{'address'} = $lv_url;
+				$req_parameter->{'token'} = $usertoken;
+				foreach my $tmp_lv_info(@$lv_info){
+					my $post_data =  "{\"volume\":{\"display_name\":\"$vm_name$tmp_lv_info->{disk_name}\",\"size\":$tmp_lv_info->{disk_total_size}}}";
+					$req_parameter->{'data'} = $post_data;
+					my $lv_post_value = http_request($req_parameter);
+					if($lv_post_value->{rc}){
+						$lv_post_value->{message} =~ s/(.*)/create lv: $1/; 	
+						return $lv_post_value;
+					}
+					my $lv_id = $lv_post_value->{volume}->{id};
+
+					my $req_lv_stat_url = $url;
+					$req_parameter->{'type'} = "GET";
+					$req_lv_stat_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_id/;	
+					$req_parameter->{'address'} = $req_lv_stat_url;
+					$req_parameter->{'token'} = $usertoken;
+					my $lv_status;
+					$lv_status = http_request($req_parameter);
+					my $lv_status_num;
+					while(1){
+
+						$lv_status = http_request($req_parameter);
+						$lv_status_num ++;
+						if(($lv_status->{volume}->{status} eq "error") or($lv_status_num > 10)){
+							my $lv_status;
+							$lv_status->{rc} = 1;
+							$lv_status->{message} = "create lv fail";
+							return $lv_status;
+						}
+						if($lv_status->{volume}->{status} eq "available"){
+							last;
+						}
+						sleep(2);
+					}
+
+					$post_data =  "{\"volumeAttachment\":{\"volumeId\":\"$lv_id\"}}" ;
+					my $attach_lv_url = $url;
+					$attach_lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments/;	
+					$req_parameter->{'type'} = "POST";
+					$req_parameter->{'address'} = $attach_lv_url;
+					$req_parameter->{'data'} = $post_data;
+					my $attach_lv_value = http_request($req_parameter);
+					if($attach_lv_value->{rc}){
+						$attach_lv_value->{message} =~ s/(.*)/attach lv: $1/; 	
+						return $attach_lv_value;
+					}
+
 				}
+				$attach_lv_reval->{rc} = 0;
+				$attach_lv_reval->{message} = "atach lv success";
 
-			}
-			$attach_lv_reval->{rc} = 0;
-			$attach_lv_reval->{message} = "atach lv success";
+				return $attach_lv_reval;
 
-			return $attach_lv_reval;
 
+			}	
 		}elsif($vm_current_st->{server}->{status} eq "ERROR"){
 			$attach_lv_reval->{rc} = 1;
-			$attach_lv_reval->{massage} = "create vm fail";
+			$attach_lv_reval->{message} = "create vm fail";
 			return $attach_lv_reval;
 		}
 
-		sleep(20);
+		sleep(5);
 		$req_num ++;
 		if($req_num > 5){
 			$attach_lv_reval->{rc} = 1;
-			$attach_lv_reval->{massage} = "attach lv fail";
+			$attach_lv_reval->{message} = "attach lv fail";
 			return $attach_lv_reval;
 		}
 	}
@@ -733,46 +734,46 @@ sub del_vm_lv
 	$req_parameter->{'type'} = "DELETE";
 	$req_parameter->{'token'} = $usertoken;
         		
-	$vmname = "power03";	
-	my $sql_statement = "select disk_name,uuid from t_disk where lpar_name=\"$vmname\" and disk_belong_vg!=\"rootvg\";";
-	my $disks_info = get_table_values($sql_statement);
-	foreach my $tmp_lv_info(@$disks_info){
-		$lv_uuid = $tmp_lv_info->{uuid};
-		$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments\/$lv_uuid/;	
-		$req_parameter->{'address'} = $lv_url;
-		my $lv_post_value = http_request($req_parameter);
-		if ($lv_post_value->{rc} == 1){
-			return $lv_post_value;
-		}
-		
-		my $lv_info_url = $url;
-		$lv_info_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_uuid/;
-		$req_parameter->{'type'} = "GET";
-		$req_parameter->{'address'} = $lv_info_url;
-		$req_parameter->{'token'} = $usertoken;
-		my $lv_status_num ;
-		while(1){
-			my $lv_st_reval = http_request($req_parameter);
-			$lv_status_num ++;
-			if(($lv_status_num > 10)){
-				my $lv_status;
-				$lv_status->{rc} = 1;
-				$lv_status->{message} = "detach lv fail";
-				return $lv_status;
+	my $disks_info = get_table_values(qq{select disk_name,uuid from t_disk where lpar_name="$vmname" and disk_belong_vg!="rootvg";},"uuid");
+	if($disks_info ne undef){
+		foreach my $tmp_lv_info(@$disks_info){
+			$lv_uuid = $tmp_lv_info->{uuid};
+			$lv_url =~ s/^(.*)(tenantid)$/$1$usertenant\/servers\/$vm_id\/os-volume_attachments\/$lv_uuid/;	
+			$req_parameter->{'address'} = $lv_url;
+			my $lv_post_value = http_request($req_parameter);
+			if ($lv_post_value->{rc} == 1){
+				return $lv_post_value;
 			}
-			if($lv_st_reval->{volume}->{status} eq "available"){
-				last;
+
+			my $lv_info_url = $url;
+			$lv_info_url =~ s/^(.*)(tenantid)$/$1$usertenant\/os-volumes\/$lv_uuid/;
+			$req_parameter->{'type'} = "GET";
+			$req_parameter->{'address'} = $lv_info_url;
+			$req_parameter->{'token'} = $usertoken;
+			my $lv_status_num ;
+			while(1){
+				my $lv_st_reval = http_request($req_parameter);
+				$lv_status_num ++;
+				if(($lv_status_num > 10)){
+					my $lv_status;
+					$lv_status->{rc} = 1;
+					$lv_status->{message} = "detach lv fail";
+					return $lv_status;
+				}
+				if($lv_st_reval->{volume}->{status} eq "available"){
+					last;
+				}
+				sleep(5);
+			}	
+
+			$req_parameter->{'type'} = "DELETE";
+			my $rm_lv_return = http_request($req_parameter);
+			if($rm_lv_return->{rc}){
+				return $rm_lv_return;
 			}
-			sleep(5);
-		}	
-		
-		# delete lv 	
-		$req_parameter->{'type'} = "DELETE";
-		my $rm_lv_return = http_request($req_parameter);
-		if($rm_lv_return->{rc}){
-			return $rm_lv_return;
 		}
 	}
+	
 	$detach_value->{rc} = 0;
 	$detach_value->{message} = "success";
 
@@ -838,14 +839,16 @@ sub create_vm
 	}	
 	$vm_ports =~ s/^(.*),$/$1/;
 
-	#my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"availability_zone\":\"$available_zone\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
-	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
+	my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"availability_zone\":\"$available_zone\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
+	#my $post_data = "{\"server\":{\"name\": \"$vm_name\",\"imageRef\": \"$image_id\",\"flavorRef\": \"$flavor_id\",\"networks\":[$vm_ports]}}";
 	my $req_parameter;
 	$req_parameter->{'type'} = "POST";
 	$req_parameter->{'address'} = $url;
 	$req_parameter->{'token'} = $token_id;
 	$req_parameter->{'data'} = $post_data;
+        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 	my $vm_post_value = http_request($req_parameter);
+        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($vm_post_value ), "info");
 	if($vm_post_value->{rc}){
 		return $vm_post_value;
 	}
@@ -868,14 +871,12 @@ sub get_subnet_id
 	my $url	= shift;
 	my $vm_ip = shift;
 	my $vm_mask = shift;
-	my $gateway_ip = shift;
+	my $usertenant = shift;
 	my $vmname = shift;
 	my $network_return_value = shift;
 	my $usertenant = shift;
-	
 	my $cidr;
 	$cidr = Net::CIDR::addrandmask2cidr($vm_ip, $vm_mask);
-	
 	my $subnet_return_value = ();
 
 	my $subnet_url = $url."v2.0/subnets";
@@ -891,8 +892,8 @@ sub get_subnet_id
 	 
 	my $create_subnet_flag = 0;
 	foreach my $tmp_subnet_value (@{$subnet_get_data_hash->{subnets}}){
-		#if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
-		if( ($tmp_subnet_value->{'cidr'} eq $cidr)){
+		if(($tmp_subnet_value->{'network_id'} eq $network_return_value) && ($tmp_subnet_value->{'cidr'} eq $cidr)){
+		#if( ($tmp_subnet_value->{'cidr'} eq $cidr)){
 			my $allocation_pools = $tmp_subnet_value->{'allocation_pools'};
 			foreach my $temp_pools (@$allocation_pools){
 				if((ipsring2int($vm_ip) >= ipsring2int($temp_pools->{'start'})) && (ipsring2int($vm_ip) <= ipsring2int($temp_pools->{'end'}))){
@@ -911,17 +912,18 @@ sub get_subnet_id
 		}
 	}
 	if(5 >  $create_subnet_flag){
-		my $start_num = '2';
-		my $end_num = '254';
 		if(2 == $create_subnet_flag){
-			$start_num = $vm_ip; 
-			$start_num =~ s/(\d+).(\d+).(\d+).(\d+)/$4/;
-			$end_num = $start_num; 
+			my $subnet_reval;
+			$subnet_reval->{rc} = 1;
+			$subnet_reval->{message} = "please modify subnet attribute";
+			return $subnet_reval;
 		}
-		my $start_ip =$vm_ip;
-		$start_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$start_num/;
-		my $end_ip =$vm_ip;
-		$end_ip =~ s/(\d+).(\d+).(\d+).(\d+)./$1.$2.$3.$end_num/;
+		my @ip_range = Net::CIDR::cidr2range("$cidr");
+		$ip_range[0] =~ /(.*)-(.*)/;
+		my $start_ip =$1;
+		my $end_ip =$2;
+		$start_ip =~ s/^(\d+).(\d+).(\d+).(\d+)$/$1.$2.$3.2/;
+		$end_ip =~ s/^(\d+).(\d+).(\d+).(\d+)$/$1.$2.$3.254/;
 
 		my $create_subnet_parameter = "{\"name\": \"$vmname\",\"enable_dhcp\": true,
 		   \"network_id\":\"$network_return_value\",\"ip_version\":4,\"cidr\":\"$cidr\",
@@ -935,6 +937,7 @@ sub get_subnet_id
 		my $subnet_post_value = http_request($req_parameter);
 
 		if($subnet_post_value->{rc}){
+			$subnet_post_value->{message} =~ s/(.*)/subnet: $1/;
 			return $subnet_post_value;
 		}
 		$subnet_return_value->{subnet}->{id} = $subnet_post_value->{subnet}->{id};	
@@ -965,7 +968,7 @@ sub get_net_id
 	}else{
 		my $create_net_flag = ();
 		foreach my $tmp_network_value (@{$net_response->{networks}}){
-			if ($tmp_network_value->{'provider:segmentation_id'} eq $vlan_id){
+			if (($tmp_network_value->{'provider:segmentation_id'} eq $vlan_id) ){
 				$network_return_value->{id} = $tmp_network_value->{'id'};	
 				$network_return_value->{rc} = 0;	
 				$create_net_flag = 1;
@@ -1072,49 +1075,58 @@ sub generate_network
 	my $network_return_value = ();
 	my $network_url = $url."v2.0/networks";
 	my @return_values;
-    	my $sql_statement = "SELECT eth FROM t_vlan WHERE lpar_name = \"$vmname\";"; 
-	my $eths = get_table_values($sql_statement);
-	foreach my $tmp_eth (@$eths){
-		my $net_id;
-		my $subnet_id;
-		my $port_id;
-		my $sql_statement = "SELECT vlan FROM t_vlan WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
-		my $eth_vlan = get_table_value($sql_statement);
-			
-		my $sql_statement = "SELECT ip FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
-		my $eth_ip = get_table_value($sql_statement);
-		
-		my $sql_statement = "SELECT mask FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
-		my $eth_mask = get_table_value($sql_statement);
-		
-		my $sql_statement = "SELECT gateway FROM t_network WHERE lpar_name = \"$vmname\" AND eth = \"$tmp_eth->{eth}\";";
-		my $eth_gateway = get_table_value($sql_statement);
+	my $eths = get_table_values(qq{SELECT eth FROM t_vlan WHERE lpar_name = "$vmname";},"eth");
+	if($eths ne undef){
+		foreach my $tmp_eth (@$eths){
+			my $net_id;
+			my $subnet_id;
+			my $port_id;
+			my $eth_ip = get_table_value(qq{SELECT ip FROM t_network WHERE lpar_name = "$vmname" AND eth = "$tmp_eth->\{eth\}";}, "ip");
+			if($eth_ip eq undef){
+				next;
+			}
+			my $eth_vlan = get_table_value(qq{SELECT vlan FROM t_vlan WHERE lpar_name = "$vmname" AND eth = "$tmp_eth->\{eth\}";}, "vlan");
+			if($eth_vlan eq undef){
+				my $vlan_return;
+				$vlan_return->{rc} = 1;
+				$vlan_return->{message} = "$vmname $tmp_eth->{eth} vlan does not exist";
+				return $eth_vlan;
+			}
+			my $eth_mask = get_table_value(qq{SELECT mask FROM t_network WHERE lpar_name = "$vmname" AND eth = "$tmp_eth->\{eth\}";}, "mask");
+			if($eth_mask eq undef){
+				my $mask_return;
+				$mask_return->{rc} = 1;
+				$mask_return->{message} = "$vmname $tmp_eth->{eth} mask does not exist";
+				return $mask_return;
+			}
+			my $eth_gateway = get_table_value(qq{SELECT gateway FROM t_network WHERE lpar_name = "$vmname" AND eth = "$tmp_eth->\{eth\}";},"gateway");
 
+			my $net_value = get_net_id($admintoken,$url,$eth_vlan,$vmname,$usertenant);  
+			if($net_value->{rc}){
+				return	$net_value;
+			}else{
+				$net_id = $net_value->{id};	
+			}
+			my $subnet_value = get_subnet_id($admintoken,$url,$eth_ip,$eth_mask,$usertenant,$vmname,$net_id);  
 
-		my $net_value = get_net_id($admintoken,$url,$eth_vlan->{'vlan'},$vmname,$usertenant);  
-		if($net_value->{rc}){
-			return	$net_value;
-		}else{
-			$net_id = $net_value->{id};	
+			if($subnet_value->{rc}){
+				return	$subnet_value;
+			}else{
+				$subnet_id = $subnet_value->{subnet}->{id};	
+			}
+
+			my $port_value = get_port_id($usertoken,$url,$eth_ip,$net_id,$subnet_id,$vmname,$usertenant,$usertenant);
+			if($port_value->{rc}){
+				return	$port_value;
+			}else{
+				$port_id->{port}->{id} = $port_value->{port}->{id};	
+				$port_id->{rc} = 0;	
+			}
+
+			push @return_ports,$port_id;	
 		}
-		my $subnet_value = get_subnet_id($admintoken,$url,$eth_ip->{'ip'},$eth_mask->{'mask'},$eth_gateway->{'gateway'},$vmname,$net_id);  
-
-		if($subnet_value->{rc}){
-			return	$subnet_value;
-		}else{
-			$subnet_id = $subnet_value->{subnet}->{id};	
-		}
-		
-		my $port_value = get_port_id($admintoken,$url,$eth_ip->{'ip'},$net_id,$subnet_id,$vmname,$usertenant,$usertenant);
-		if($port_value->{rc}){
-			return	$port_value;
-		}else{
-			$port_id->{port}->{id} = $port_value->{port}->{id};	
-			$port_id->{rc} = 0;	
-		}
-
-		push @return_ports,$port_id;	
 	}
+	
 	return  @return_ports;	
 }
 
@@ -1122,28 +1134,40 @@ sub get_table_values
 {
 
 	my $sql_statement = shift;
+	my $arg             = shift;
 	my  $dbd = $::dbd;
 	my $pre = $dbd->prepare( qq{$sql_statement});
 	$pre->execute();
 	my @return_value;
 	while (my $tmp_value = $pre->fetchrow_hashref()){
-		push @return_value,$tmp_value;
+		if ( $tmp_value->{$arg} ne "") {
+			push @return_value,$tmp_value;
+		}
 	}
 	$pre->finish();
-	return \@return_value;
+
+	if(@return_value){
+		return \@return_value;
+	}else{
+		return undef;
+	}
 	
 }
 
 sub get_table_value
 {
-	my $sql_statement = shift;
+	my $sql_statement   = shift;
+	my $arg             = shift;
 	my  $dbd = $::dbd;
 	my $pre = $dbd->prepare( qq{$sql_statement});
 	$pre->execute();
 	my $return_value = $pre->fetchrow_hashref();
 	$pre->finish();
-	return $return_value;
-	
+	if ( $return_value->{$arg} eq "") {
+		return undef;
+	}else {
+		return $return_value->{$arg};
+	}
 } 
 
 sub generate_flavor
@@ -1157,19 +1181,31 @@ sub generate_flavor
 	my $flavor_return_value = ();
 	
 	$flavor_data{name} = $vmname;
-	$flavor_data{vcpus} = ();
-	$flavor_data{ram} = ();
-	$flavor_data{disk} = ();
 
-	my  $dbd = $::dbd;
-	my $pre = $dbd->prepare( qq{SELECT memory_total,cpu_logic  FROM t_vm where lpar_name="$vmname" ;});
-	$pre->execute();
-	my $info = $pre->fetchrow_hashref();
-	$pre->finish();
-
-	$flavor_data{vcpus} = $info->{cpu_logic};
-	$flavor_data{ram} = $info->{memory_total};
-	$flavor_data{disk} = 1;
+	$flavor_data{vcpus} = get_table_value(qq{SELECT cpu_logic  FROM t_vm where lpar_name="$vmname";},"cpu_logic");
+	if($flavor_data{vcpus} eq undef){
+		my $flavor_data;
+		$flavor_data->{rc} = 1;
+		$flavor_data->{message} = "$vmname vcpus does not exist";
+		return $flavor_data;
+	}
+	$flavor_data{ram} = get_table_value(qq{SELECT memory_total  FROM t_vm where lpar_name="$vmname";},"memory_total");
+	if($flavor_data{ram} eq undef){
+		my $flavor_data;
+		$flavor_data->{rc} = 1;
+		$flavor_data->{message} = "$vmname ram does not exist";
+		return $flavor_data;
+	}
+	my $disk_size = get_table_values(qq{SELECT disk_total_size  FROM t_disk where lpar_name="$vmname" and disk_belong_vg="rootvg";} ,"disk_total_size");
+	if($disk_size eq undef){
+		my $flavor_data;
+		$flavor_data->{rc} = 1;
+		$flavor_data->{message} = "$vmname disk does not exist";
+		return $flavor_data;
+	}
+	foreach my $tmp_disk_size (@$disk_size){
+		$flavor_data{disk} += $tmp_disk_size->{disk_total_size};
+	}
 
 	$url .= "/flavors";
 	my $get_url = $url."/detail";
@@ -1213,14 +1249,39 @@ sub generate_image
 	my $vmname = shift;
 	my $returned_image_id;
 
-	#finde url
 	my $url = gain_conf_value("url","image");
 	my $create_image_flag;
 
-	# gian the infomation that related to image frome pcenter database based on vmname
+	my $image_name  = "";
+	my $image_name  = get_table_value("SELECT image FROM t_vm WHERE lpar_name=\"$vmname\"", "image");
+	if ($image_name eq undef) {
+		my $os_name = get_table_value("SELECT os FROM t_vm WHERE lpar_name=\"$vmname\"", "os");
+		if ( $os_name ne undef ) {
+			my $systems = get_table_values("SELECT c.name,c.id FROM t_dict p, t_dict c WHERE p.type='vm_os' and p.id=c.pid");
+			foreach my $system (@$systems) {
+				my $flag = 0;
+				if ( $os_name =~ /$system->{name}/ ) {
+					my $versions = get_table_values("select c.name from t_dict p, t_dict c where p.id=c.pid and c.pid='$system->{id}'");
+					foreach my $version (@$versions) {
+						if ( $os_name =~ /$version->{name}/ ) {
+							$flag = 1;
+							$image_name = "$system->{name}" . "$version->{name}";
+							last;
+						}
+					}
+					if ($flag eq 1) {
+						last;
+					}
+				}
+			}
+		}
+	}
+	if ( $image_name eq undef ) {
+		$image_name = gain_conf_value("image","default");
+	}
+	$image_name = uc($image_name);
 
-	my $sql_statement = "SELECT os FROM t_vm WHERE lpar_name = \"$vmname\"";
-	my $image_name = get_table_value($sql_statement)->{os};
+
 	my $get_url = $url."?name=$image_name";
 	my $req_parameter; 
 	$req_parameter->{'type'} = "GET";
@@ -1231,54 +1292,55 @@ sub generate_image
 	if($image_response->{rc}){
 		return $image_response ;
 	}else{
-			foreach my $tmp_image_value (@{$image_response->{images}}){
-				if(($tmp_image_value->{status} eq "active")){
-					$returned_image_id->{id} = $tmp_image_value->{id};
-					$returned_image_id->{rc} = 0;
-					return $returned_image_id;
-				}	
-
+		foreach my $tmp_image_value (@{$image_response->{images}}){
+			if(($tmp_image_value->{status} eq "active")){
+				$returned_image_id->{id} = $tmp_image_value->{id};
+				$returned_image_id->{rc} = 0;
+				return $returned_image_id;
 			}	
 
-			my $post_data ='{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "$image_name"}' ;
-			$post_data =~ s/^(.*)"(\$image_name)/$1"$image_name/;
+		}	
 
-			$req_parameter->{'type'} = "POST";
-			$req_parameter->{'address'} = $get_url;
+
+		my $post_data =qq{\{"file_format":"vhd","protected":false,"min_disk":1,"visibility":"public","container_format": "bare", "disk_format": "vhd", "name": "$image_name"\}} ;
+		$post_data =~ s/^(.*)"(\$image_name)/$1"$image_name/;
+
+		$req_parameter->{'type'} = "POST";
+		$req_parameter->{'address'} = $get_url;
+		$req_parameter->{'token'} = $token_id;
+		$req_parameter->{'data'} = $post_data;
+		my $image_value = http_request($req_parameter);
+		if($image_value->{rc}){
+			return $image_value;
+		}else{
+			$returned_image_id->{id}  = $image_value->{id};	
+			my $put_data = "@/tmp/$image_name".".vhd";
+			my $image_id = $image_value->{id};	
+			my $put_url = $url."/$image_id/file";
+
+			open(FD,">/tmp/$image_name.vhd") or die $!;
+			print FD "this is image file";
+			close(FD);
+
+			$req_parameter->{'type'} = "PUT";
+			$req_parameter->{'address'} = $put_url;
 			$req_parameter->{'token'} = $token_id;
-			$req_parameter->{'data'} = $post_data;
-			my $image_value = http_request($req_parameter);
-			if($image_value->{rc}){
-				return $image_value;
+			$req_parameter->{'data'} = $put_data;
+
+			my $upload_image_value = http_request($req_parameter);
+			if($upload_image_value->{rc}){
+				return $upload_image_value;
 			}else{
-				$returned_image_id->{id}  = $image_value->{id};	
-				my $put_data = "@/root/$image_name".".vhd";
-				my $image_id = $image_value->{id};	
-				my $put_url = $url."/$image_id/file";
 
-				open(FD,">/root/$image_name.vhd") or die $!;
-				print FD "this is image file";
-				close(FD);
+				$returned_image_id->{rc}  = 0;	
+				my $pcenter_cmd = "rm -rf /tmp/$image_name.vhd";
+				my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
 
-				$req_parameter->{'type'} = "PUT";
-				$req_parameter->{'address'} = $put_url;
-				$req_parameter->{'token'} = $token_id;
-				$req_parameter->{'data'} = $put_data;
-
-				my $upload_image_value = http_request($req_parameter);
-				if($upload_image_value->{rc}){
-					return $upload_image_value;
-				}else{
-					
-					$returned_image_id->{rc}  = 0;	
-					my $pcenter_cmd = "rm -rf /root/$image_name.vhd";
-					my $outref = pcenter::Utils->runcmd("$pcenter_cmd", 0);
-					
-					$returned_image_id->{rc} = 0;
-					return $returned_image_id;
-				}
-
+				$returned_image_id->{rc} = 0;
+				return $returned_image_id;
 			}
+
+		}
 	}
 }
 
@@ -1338,9 +1400,13 @@ sub get_available_zone
 	my $admintoken = shift;
 	my $admintenant = shift;
 
-	my $sql_statement = "SELECT parent FROM ppc  WHERE node = \"$vm_name\";";
-	my $server_name = get_table_value($sql_statement)->{parent};
-
+	my $server_name = get_table_value(qq{SELECT parent FROM ppc  WHERE node = "$vm_name";}, "parent");
+	if($server_name eq undef){
+		my $server_name_return;
+		$server_name_return->{rc} = 1;
+		$server_name_return->{message} = "$vm_name parenter does not exits in ppc";
+		return $server_name_return;
+	}
 	my $url = gain_conf_value("url","flavor");
 	$url =~ s/^(.*)(tenantid)$/$1$admintenant\/os-hypervisors/;	
 	my $req_parameter;
@@ -1359,6 +1425,12 @@ sub get_available_zone
 		}
 	}
 	 
+	if ($hypervisor_id eq ""){
+		my $hypervisor_id_return;
+		$hypervisor_id_return->{rc} = 1;
+		$hypervisor_id_return->{message} = "$vm_name hypervisor not found";
+		return $hypervisor_id_return;
+	}
 	$url .="/$hypervisor_id";
 	my $req_parameter;
 	$req_parameter->{'type'} = "GET";
@@ -1396,7 +1468,7 @@ sub az_verification
 	$return_val->{rc} = 1;
 	foreach my $tmp_availability_zone (@{$availability_zone_list->{availabilityZoneInfo}}){
 		#if(($tmp_availability_zone->{zoneName} eq $available_zone) and ($tmp_availability_zone->{zoneName}->{zoneState}->{available})){
-		if(($tmp_availability_zone->{zoneName}->{zoneState}->{available})){
+		if(($tmp_availability_zone->{zoneName} eq $available_zone) ){
 			$return_val->{rc} = 0;
 			last;
 		}
