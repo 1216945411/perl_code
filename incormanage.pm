@@ -607,7 +607,7 @@ sub get_vm_state
 sub get_lv_info
 {
     my $vmname = shift;
-    my $disks_info = get_table_values(qq{select disk_name,disk_total_size from t_disk where lpar_name=$vmname and disk_belong_vg!=rootvg;},"disk_total_size");
+    my $disks_info = get_table_values(qq{select disk_name,disk_total_size from t_disk where lpar_name="$vmname" and disk_belong_vg!="rootvg";},"disk_total_size");
     return $disks_info; 
 }
 
@@ -625,7 +625,6 @@ sub attach_lv
 		if($vm_current_st->{rc}){
 			return 	$vm_current_st;
 		}
-
 		if($vm_current_st->{server}->{status} eq "ACTIVE"){
 			my $lv_info = get_lv_info($vm_name); 
 			if($lv_info ne undef){
@@ -689,7 +688,13 @@ sub attach_lv
 				return $attach_lv_reval;
 
 
+			}else{
+
+				$attach_lv_reval->{rc} = 0;
+				$attach_lv_reval->{message} = "attach lv success";
+				return $attach_lv_reval;
 			}	
+			
 		}elsif($vm_current_st->{server}->{status} eq "ERROR"){
 			$attach_lv_reval->{rc} = 1;
 			$attach_lv_reval->{message} = "create vm fail";
@@ -698,11 +703,12 @@ sub attach_lv
 
 		sleep(5);
 		$req_num ++;
-		if($req_num > 5){
+		
+	}
+	if($req_num > 5){
 			$attach_lv_reval->{rc} = 1;
 			$attach_lv_reval->{message} = "attach lv fail";
 			return $attach_lv_reval;
-		}
 	}
 }
 
@@ -814,10 +820,140 @@ sub unincormanage
 		push @values, ["success","success",0];
 	}
 
-	push @values, ["success","success",0];
+	
+	$req_parameter->{'type'} = "GET";
+	my $req_num;
+	while(1){
+        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($req_parameter ), "info");
+		my $vm_st = http_request($req_parameter);
+        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($vm_st), "info");
+		if(($vm_st->{code} == 404) or($req_num > 6)){
+			push @values, ["success","success",0];
+			return( \@values );
+		}
+		sleep(5);
+		 $req_num ++;
+	}
+	push @values, ["fail","fail",1];
 	return( \@values );
 }
 
+sub query_req_stat
+{
+=pod
+	my $req_parameter = shift;	
+	my $stop_loop_condation = shift;
+	my $req_num ;
+	while(1){
+
+		my $query_stat = http_request($req_parameter);
+		if($query_stat->{rc}){
+			return $query_stat;
+		}
+		if(($req_num > 6) or ()){
+			return 
+				last;
+		}
+		sleep(10);
+		$req_num ++;
+
+	}
+=cut
+}
+
+sub vm_is_exist
+{
+	my $token_id= shift;
+	my $url = shift;
+	my $user_tenant = shift;
+	my $vm_parameter = shift;
+	my $vm_name = $vm_parameter->{vm_name};
+	my $return_val;
+	my $req_parameter;
+	$req_parameter->{'type'} = "GET";
+	$req_parameter->{'address'} = $url;
+	$req_parameter->{'token'} = $token_id;
+	my $vm_get_value = http_request($req_parameter);
+	if($vm_get_value->{rc}){
+		return $vm_get_value;
+	}
+	my $vm_exist_flag;
+	my $vm_id;
+	foreach my $tmp_vm_value (@{$vm_get_value->{servers}}){
+		if($tmp_vm_value->{name} eq $vm_name){
+			my $vm_exist_flag = 1;
+			$vm_id = $tmp_vm_value->{id};
+			last;
+		}
+	}
+	if($vm_exist_flag){
+		#get vm
+		$url .= "$vm_id";
+		$req_parameter->{'address'} = $url;
+		$req_parameter->{'data'} = ();
+		my $vm_get_value = http_request($req_parameter);
+		if($vm_get_value->{rc}){
+			return $vm_get_value;
+		}
+		if($vm_get_value->{server}->{status}eq "ERROR"){
+			# delete
+			$req_parameter->{'type'} = "DELETE";
+			my $vm_delete_value = http_request($req_parameter);
+			if($vm_delete_value->{rc} ){
+				return $vm_delete_value;
+			}
+
+			#get vm state
+			$req_parameter->{'type'} = "GET";
+			my $vm_delete_value = http_request($req_parameter);
+
+			my $req_num ;
+			while(1){
+
+				my $query_stat = http_request($req_parameter);
+				if($query_stat->{rc}){
+					return $query_stat;
+				}
+
+				if(($query_stat->{code} == 404)){
+					my $vm_exist_return ;
+					$vm_exist_return->{rc} = 0;
+					$vm_exist_return->{id} = $vm_id;
+					$vm_exist_return->{vmname} = "";
+					return $vm_exist_return;
+				}
+				if($req_num > 6){
+					my $vm_exist_return ;
+					$vm_exist_return->{rc} = 1;
+					$vm_exist_return->{id} = $vm_id;
+					$vm_exist_return->{vmname} = "";
+					$vm_exist_return->{message} = "vm exist and have error staus";
+					return $vm_exist_return;
+				}
+				sleep(10);
+				$req_num ++;
+
+			}
+
+
+
+		}else{
+			my $vm_exist_return ;
+			$vm_exist_return->{rc} = 0;
+			$vm_exist_return->{id} = $vm_id;
+			$vm_exist_return->{vmname} = $vm_name;
+			return $vm_exist_return;
+	
+		}
+	}else{
+			my $vm_exist_return ;
+			$vm_exist_return->{rc} = 0;
+			$vm_exist_return->{id} = $vm_id;
+			$vm_exist_return->{vmname} = "";
+			return $vm_exist_return;
+	}	
+
+}
 
 sub create_vm
 {
@@ -825,10 +961,20 @@ sub create_vm
 	my $vm_parameter = shift;
 	my $user_tenant = shift;
 	my $url = gain_conf_value("url","servers");
+	my $vm_return_value = ();
 
 	$url =~ s/^(.*)(tenantid)(.*)$/$1$user_tenant$3/;	
+	my $vm_is_exist = vm_is_exist($token_id,$url ,$user_tenant,$vm_parameter);
+	if($vm_is_exist->{rc}){
+		return $vm_is_exist;
+	}
+	if($vm_is_exist->{vmname} eq $vm_parameter->{vm_name}){
+		$vm_return_value->{rc} = 0;
+		$vm_return_value->{server}->{id} = $vm_is_exist->{id} ;
+		return $vm_return_value;
+	}
+	
 	my %flavor_data = {};
-	my $vm_return_value = ();
 	my $vm_name = $vm_parameter->{vm_name};
 	my $image_id = $vm_parameter->{image_id};
 	my $flavor_id = $vm_parameter->{flavor_id};
@@ -846,9 +992,7 @@ sub create_vm
 	$req_parameter->{'address'} = $url;
 	$req_parameter->{'token'} = $token_id;
 	$req_parameter->{'data'} = $post_data;
-        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($req_parameter), "info");
 	my $vm_post_value = http_request($req_parameter);
-        pcenter::MsgUtils->log(">>>>>>>>>>>>>>>>>>".Dumper($vm_post_value ), "info");
 	if($vm_post_value->{rc}){
 		return $vm_post_value;
 	}
